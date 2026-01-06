@@ -105,6 +105,22 @@ config HID_HAPTIC
 
 menu "Special HID drivers"
 
+config HID_8BITDO
+	tristate "8BitDo devices"
+	depends on HID
+	select INPUT_FF_MEMLESS
+	help
+	  Support for 8BitDo game controllers.
+
+	  Supported devices:
+	  - 8BitDo Ultimate 2 Wireless Controller (D-Input mode)
+
+	  Features:
+	  - Force feedback/rumble support
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-8bitdo.
+
 config HID_A4TECH
 	tristate "A4TECH mice"
 	default !EXPERT
