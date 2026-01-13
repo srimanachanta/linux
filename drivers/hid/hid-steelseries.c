@@ -4,9 +4,7 @@
  *
  *  Copyright (c) 2013 Simon Wood
  *  Copyright (c) 2023 Bastien Nocera
- */
-
-/*
+ *  Copyright (c) 2025 Sriman Achanta
  */
 
 #include <linux/device.h>
@@ -14,31 +12,44 @@
 #include <linux/module.h>
 #include <linux/usb.h>
 #include <linux/leds.h>
+#include <linux/power_supply.h>
+#include <linux/workqueue.h>
+#include <linux/spinlock.h>
 
 #include "hid-ids.h"
 
-#define STEELSERIES_SRWS1		BIT(0)
-#define STEELSERIES_ARCTIS_1		BIT(1)
-#define STEELSERIES_ARCTIS_1_X		BIT(2)
-#define STEELSERIES_ARCTIS_9		BIT(3)
+#define SS_CAP_BATTERY BIT(0)
+
+/* Legacy quirk flag for SRW-S1 */
+#define STEELSERIES_SRWS1 BIT(0)
+
+struct steelseries_device_info {
+	u16 product_id;
+	const char *name;
+	u8 interface_binding_mode; /* 0 = first enumerated, 1 = specific interface(s) */
+	u16 valid_interfaces; /* Bitmask when mode = 1, ignored when mode = 0 */
+	unsigned long capabilities;
+};
 
 struct steelseries_device {
 	struct hid_device *hdev;
-	unsigned long quirks;
+	const struct steelseries_device_info *info;
 
-	struct delayed_work battery_work;
-	spinlock_t lock;
-	bool removed;
-
+	/* Battery subsystem */
 	struct power_supply_desc battery_desc;
 	struct power_supply *battery;
-	uint8_t battery_capacity;
+	struct delayed_work battery_work;
+	u8 battery_capacity;
 	bool headset_connected;
 	bool battery_charging;
+
+	/* Synchronization */
+	spinlock_t lock;
+	bool removed;
 };
 
 #if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
-    (IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
 #define SRWS1_NUMBER_LEDS 15
 struct steelseries_srws1_data {
 	__u16 led_state;
@@ -128,7 +139,7 @@ static const __u8 steelseries_srws1_rdesc_fixed[] = {
 };
 
 #if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
-    (IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
 static void steelseries_srws1_set_leds(struct hid_device *hdev, __u16 leds)
 {
 	struct list_head *report_list = &hdev->report_enum[HID_OUTPUT_REPORT].report_list;
@@ -341,52 +352,233 @@ err:
 }
 #endif
 
-#define STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS	3000
-
-#define ARCTIS_1_BATTERY_RESPONSE_LEN		8
-#define ARCTIS_9_BATTERY_RESPONSE_LEN		64
-static const char arctis_1_battery_request[] = { 0x06, 0x12 };
-static const char arctis_9_battery_request[] = { 0x00, 0x20 };
-
-static int steelseries_headset_request_battery(struct hid_device *hdev,
-	const char *request, size_t len)
+static const __u8 *steelseries_srws1_report_fixup(struct hid_device *hdev,
+						  __u8 *rdesc,
+						  unsigned int *rsize)
 {
-	u8 *write_buf;
-	int ret;
+	if (hdev->vendor != USB_VENDOR_ID_STEELSERIES ||
+	    hdev->product != USB_DEVICE_ID_STEELSERIES_SRWS1)
+		return rdesc;
 
-	/* Request battery information */
-	write_buf = kmemdup(request, len, GFP_KERNEL);
-	if (!write_buf)
-		return -ENOMEM;
-
-	hid_dbg(hdev, "Sending battery request report");
-	ret = hid_hw_raw_request(hdev, request[0], write_buf, len,
-				 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
-	if (ret < (int)len) {
-		hid_err(hdev, "hid_hw_raw_request() failed with %d\n", ret);
-		ret = -ENODATA;
+	if (*rsize >= 115 && rdesc[11] == 0x02 && rdesc[13] == 0xc8 &&
+	    rdesc[29] == 0xbb && rdesc[40] == 0xc5) {
+		hid_info(hdev,
+			 "Fixing up Steelseries SRW-S1 report descriptor\n");
+		*rsize = sizeof(steelseries_srws1_rdesc_fixed);
+		return steelseries_srws1_rdesc_fixed;
 	}
-
-	kfree(write_buf);
-	return ret;
+	return rdesc;
 }
 
-static void steelseries_headset_fetch_battery(struct hid_device *hdev)
-{
-	int ret = 0;
+static const struct steelseries_device_info arctis_1_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_1,
+	.name = "Arctis 1 Wireless",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
 
-	if (hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1 ||
-	    hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X)
-		ret = steelseries_headset_request_battery(hdev,
-			arctis_1_battery_request, sizeof(arctis_1_battery_request));
-	else if (hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9)
-		ret = steelseries_headset_request_battery(hdev,
-			arctis_9_battery_request, sizeof(arctis_9_battery_request));
+static const struct steelseries_device_info arctis_1_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X,
+	.name = "Arctis 1 Wireless for Xbox",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
 
-	if (ret < 0)
-		hid_dbg(hdev,
-			"Battery query failed (err: %d)\n", ret);
-}
+static const struct steelseries_device_info arctis_7_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7,
+	.name = "Arctis 7",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(5),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_p_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_P,
+	.name = "Arctis 7P",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_X,
+	.name = "Arctis 7X",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_gen2_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_GEN2,
+	.name = "Arctis 7 (2019 Edition)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(5),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_plus_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS,
+	.name = "Arctis 7+",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_plus_p_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P,
+	.name = "Arctis 7+ (PlayStation)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_plus_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X,
+	.name = "Arctis 7+ (Xbox)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_7_plus_destiny_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY,
+	.name = "Arctis 7+ (Destiny Edition)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_9_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_9,
+	.name = "Arctis 9",
+	.interface_binding_mode = 0,
+	.valid_interfaces = 0,
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_pro_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO,
+	.name = "Arctis Pro Wireless",
+	.interface_binding_mode = 0,
+	.valid_interfaces = 0,
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_3_p_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P,
+	.name = "Arctis Nova 3 (PlayStation)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(0),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_3_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X,
+	.name = "Arctis Nova 3 (Xbox)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(0),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_5_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5,
+	.name = "Arctis Nova 5",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_5_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X,
+	.name = "Arctis Nova 5X",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7,
+	.name = "Arctis Nova 7",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X,
+	.name = "Arctis Nova 7X",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_p_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_P,
+	.name = "Arctis Nova 7P",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_REV2,
+	.name = "Arctis Nova 7X (Rev 2)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_diablo_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_DIABLO,
+	.name = "Arctis Nova 7 (Diablo IV Edition)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_wow_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_WOW,
+	.name = "Arctis Nova 7 (World of Warcraft Edition)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_gen2_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_GEN2,
+	.name = "Arctis Nova 7 (Gen 2)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2,
+	.name = "Arctis Nova 7X (Gen 2)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(3),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_pro_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO,
+	.name = "Arctis Nova Pro Wireless",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(4),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+static const struct steelseries_device_info arctis_nova_pro_x_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO_X,
+	.name = "Arctis Nova Pro Wireless (Xbox)",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(4),
+	.capabilities = SS_CAP_BATTERY,
+};
+
+#define STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS 3000
 
 static int battery_capacity_to_level(int capacity)
 {
@@ -397,19 +589,33 @@ static int battery_capacity_to_level(int capacity)
 	return POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 }
 
-static void steelseries_headset_battery_timer_tick(struct work_struct *work)
+static u8 steelseries_map_battery(u8 capacity, u8 min_in, u8 max_in)
 {
-	struct steelseries_device *sd = container_of(work,
-		struct steelseries_device, battery_work.work);
-	struct hid_device *hdev = sd->hdev;
+	if (capacity >= max_in)
+		return 100;
+	if (capacity <= min_in)
+		return 0;
+	return (capacity - min_in) * 100 / (max_in - min_in);
+}
 
-	steelseries_headset_fetch_battery(hdev);
+static void steelseries_headset_set_wireless_status(struct hid_device *hdev,
+						    bool connected)
+{
+	struct usb_interface *intf;
+
+	if (!hid_is_usb(hdev))
+		return;
+
+	intf = to_usb_interface(hdev->dev.parent);
+	usb_set_wireless_status(intf, connected ?
+					      USB_WIRELESS_STATUS_CONNECTED :
+					      USB_WIRELESS_STATUS_DISCONNECTED);
 }
 
 #define STEELSERIES_PREFIX "SteelSeries "
 #define STEELSERIES_PREFIX_LEN strlen(STEELSERIES_PREFIX)
 
-static int steelseries_headset_battery_get_property(struct power_supply *psy,
+static int steelseries_battery_get_property(struct power_supply *psy,
 				enum power_supply_property psp,
 				union power_supply_propval *val)
 {
@@ -452,32 +658,62 @@ static int steelseries_headset_battery_get_property(struct power_supply *psy,
 	return ret;
 }
 
-static void
-steelseries_headset_set_wireless_status(struct hid_device *hdev,
-					bool connected)
-{
-	struct usb_interface *intf;
-
-	if (!hid_is_usb(hdev))
-		return;
-
-	intf = to_usb_interface(hdev->dev.parent);
-	usb_set_wireless_status(intf, connected ?
-				USB_WIRELESS_STATUS_CONNECTED :
-				USB_WIRELESS_STATUS_DISCONNECTED);
-}
-
-static enum power_supply_property steelseries_headset_battery_props[] = {
-	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_MANUFACTURER,
-	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_SCOPE,
-	POWER_SUPPLY_PROP_CAPACITY,
+static enum power_supply_property steelseries_battery_props[] = {
+	POWER_SUPPLY_PROP_MODEL_NAME,	  POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_PRESENT,	  POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_SCOPE,	  POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 };
 
-static int steelseries_headset_battery_register(struct steelseries_device *sd)
+/* Forward declarations for battery request functions */
+static int steelseries_arctis_1_request_battery(struct hid_device *hdev);
+static int steelseries_arctis_7_plus_request_battery(struct hid_device *hdev);
+static int steelseries_arctis_9_request_battery(struct hid_device *hdev);
+static int steelseries_arctis_nova_request_battery(struct hid_device *hdev);
+static int steelseries_arctis_nova_3p_request_battery(struct hid_device *hdev);
+static int
+steelseries_arctis_pro_wireless_request_battery(struct hid_device *hdev);
+
+static int steelseries_request_battery(struct hid_device *hdev)
+{
+	u16 product = hdev->product;
+
+	/* Route to device-specific battery request handler */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1 ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_P ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_X)
+		return steelseries_arctis_1_request_battery(hdev);
+
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY)
+		return steelseries_arctis_7_plus_request_battery(hdev);
+
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9)
+		return steelseries_arctis_9_request_battery(hdev);
+
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO)
+		return steelseries_arctis_pro_wireless_request_battery(hdev);
+
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X)
+		return steelseries_arctis_nova_3p_request_battery(hdev);
+
+	/* All other Nova series use the same battery request */
+	return steelseries_arctis_nova_request_battery(hdev);
+}
+
+static void steelseries_battery_timer_tick(struct work_struct *work)
+{
+	struct steelseries_device *sd = container_of(
+		work, struct steelseries_device, battery_work.work);
+
+	steelseries_request_battery(sd->hdev);
+}
+
+static int steelseries_battery_register(struct steelseries_device *sd)
 {
 	static atomic_t battery_no = ATOMIC_INIT(0);
 	struct power_supply_config battery_cfg = { .drv_data = sd, };
@@ -485,9 +721,9 @@ static int steelseries_headset_battery_register(struct steelseries_device *sd)
 	int ret;
 
 	sd->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
-	sd->battery_desc.properties = steelseries_headset_battery_props;
-	sd->battery_desc.num_properties = ARRAY_SIZE(steelseries_headset_battery_props);
-	sd->battery_desc.get_property = steelseries_headset_battery_get_property;
+	sd->battery_desc.properties = steelseries_battery_props;
+	sd->battery_desc.num_properties = ARRAY_SIZE(steelseries_battery_props);
+	sd->battery_desc.get_property = steelseries_battery_get_property;
 	sd->battery_desc.use_for_apm = 0;
 	n = atomic_inc_return(&battery_no) - 1;
 	sd->battery_desc.name = devm_kasprintf(&sd->hdev->dev, GFP_KERNEL,
@@ -499,6 +735,7 @@ static int steelseries_headset_battery_register(struct steelseries_device *sd)
 	steelseries_headset_set_wireless_status(sd->hdev, false);
 	sd->battery_capacity = 100;
 	sd->battery_charging = false;
+	sd->headset_connected = false;
 
 	sd->battery = devm_power_supply_register(&sd->hdev->dev,
 			&sd->battery_desc, &battery_cfg);
@@ -511,10 +748,10 @@ static int steelseries_headset_battery_register(struct steelseries_device *sd)
 	}
 	power_supply_powers(sd->battery, &sd->hdev->dev);
 
-	INIT_DELAYED_WORK(&sd->battery_work, steelseries_headset_battery_timer_tick);
-	steelseries_headset_fetch_battery(sd->hdev);
+	INIT_DELAYED_WORK(&sd->battery_work, steelseries_battery_timer_tick);
+	steelseries_request_battery(sd->hdev);
 
-	if (sd->quirks & STEELSERIES_ARCTIS_9) {
+	if (sd->hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9) {
 		/* The first fetch_battery request can remain unanswered in some cases */
 		schedule_delayed_work(&sd->battery_work,
 				msecs_to_jiffies(STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS));
@@ -523,40 +760,395 @@ static int steelseries_headset_battery_register(struct steelseries_device *sd)
 	return 0;
 }
 
-static bool steelseries_is_vendor_usage_page(struct hid_device *hdev, uint8_t usage_page)
+/* Helper function to send feature reports */
+static int steelseries_send_feature_report(struct hid_device *hdev,
+					   const u8 *data, size_t len)
 {
-	return hdev->rdesc[0] == 0x06 &&
-		hdev->rdesc[1] == usage_page &&
-		hdev->rdesc[2] == 0xff;
-}
-
-static int steelseries_probe(struct hid_device *hdev, const struct hid_device_id *id)
-{
-	struct steelseries_device *sd;
+	u8 *buf;
 	int ret;
 
+	buf = kmemdup(data, len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = hid_hw_raw_request(hdev, data[0], buf, len, HID_FEATURE_REPORT,
+				 HID_REQ_SET_REPORT);
+	kfree(buf);
+
+	if (ret < 0)
+		return ret;
+	if (ret < len)
+		return -EIO;
+
+	return 0;
+}
+
+/* Helper function to send output reports */
+static int steelseries_send_output_report(struct hid_device *hdev,
+					  const u8 *data, size_t len)
+{
+	u8 *buf;
+	int ret;
+
+	buf = kmemdup(data, len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	/* Use raw_request with OUTPUT_REPORT type for devices without Interrupt OUT */
+	ret = hid_hw_raw_request(hdev, data[0], buf, len, HID_OUTPUT_REPORT,
+				 HID_REQ_SET_REPORT);
+	kfree(buf);
+
+	if (ret < 0)
+		return ret;
+	if (ret < len)
+		return -EIO;
+
+	return 0;
+}
+
+static int steelseries_arctis_1_request_battery(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x06, 0x12 };
+
+	return steelseries_send_feature_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_7_plus_request_battery(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_9_request_battery(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0x20 };
+
+	return steelseries_send_feature_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_nova_request_battery(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_nova_3p_request_battery(struct hid_device *hdev)
+{
+	const u8 data[] = { 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int
+steelseries_arctis_pro_wireless_request_battery(struct hid_device *hdev)
+{
+	/* Request battery - response will arrive asynchronously via raw_event */
+	const u8 data[] = { 0x40, 0xAA };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_raw_event(struct hid_device *hdev,
+				 struct hid_report *report, u8 *data, int size)
+{
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	u16 product = hdev->product;
+	int capacity = sd->battery_capacity;
+	bool connected = sd->headset_connected;
+	bool charging = sd->battery_charging;
+	unsigned long flags;
+
+	/* Skip SRW-S1 */
+	if (product == USB_DEVICE_ID_STEELSERIES_SRWS1)
+		return 0;
+
+	/* Arctis 1 family (Arctis 1, 1X, 7P, 7X) */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1 ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_P ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_X) {
+		if (size < 8)
+			goto schedule_work;
+
+		if (data[2] == 0x01) {
+			connected = false;
+			capacity = 100;
+		} else {
+			connected = true;
+			capacity = data[3];
+			if (capacity > 100)
+				capacity = 100;
+		}
+	}
+
+	/* Arctis 7 (original and 2019) */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7 ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_GEN2) {
+		/* Battery response is 8 bytes for Arctis 7 */
+		if (size < 8)
+			goto schedule_work;
+
+		connected = true;
+		charging = false;
+
+		/* Battery level is in data[2] */
+		capacity = data[2];
+		if (capacity > 100)
+			capacity = 100;
+	}
+
+	/* Arctis 7+ family */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY) {
+		if (size < 6)
+			goto schedule_work;
+
+		/* data[1] == 0x01 means HEADSET_OFFLINE */
+		if (data[1] == 0x01) {
+			connected = false;
+			capacity = 100;
+		} else {
+			connected = true;
+			/* data[3] == 0x01 means charging */
+			charging = (data[3] == 0x01);
+			/* data[2] contains battery level (0x00-0x04 range) */
+			capacity = steelseries_map_battery(data[2], 0x00, 0x04);
+		}
+	}
+
+	/* Arctis 9 */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9) {
+		if (size < 12)
+			goto schedule_work;
+
+		connected = true;
+
+		charging = (data[4] == 0x01);
+
+		capacity = steelseries_map_battery(data[3], 0x64, 0x9A);
+	}
+
+	/* Arctis Pro Wireless */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO) {
+		if (size >= 2 && (data[0] == 0x02 || data[0] == 0x04)) {
+			/* This is a connection status response */
+			/* HEADSET_OFFLINE */
+			if (data[0] == 0x02) {
+				connected = false;
+				capacity = 100;
+				charging = false;
+			}
+			/* HEADSET_ONLINE (0x04) */
+			else {
+				connected = true;
+				charging = false;
+			}
+		} else if (size >= 1 && sd->headset_connected) {
+			/* This is a battery level response (only valid if headset connected) */
+			/* Battery range is 0x00-0x04 */
+			capacity = steelseries_map_battery(data[0], 0x00, 0x04);
+		}
+	}
+
+	/* Arctis Nova 3 */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3) {
+		/* No battery monitoring for wired headset */
+		goto schedule_work;
+	}
+
+	/* Arctis Nova 3P/3X Wireless */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X) {
+		if (size < 4)
+			goto schedule_work;
+
+		/* data[1] == 0x02 means HEADSET_OFFLINE */
+		if (data[1] == 0x02) {
+			connected = false;
+			capacity = 100;
+		} else {
+			connected = true;
+			charging = false;
+			/* data[3] contains battery level (0x00-0x64 range, 0-100) */
+			capacity = steelseries_map_battery(data[3], 0x00, 0x64);
+		}
+	}
+
+	/* Arctis Nova 5/5X */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5 ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X) {
+		if (size < 16)
+			goto schedule_work;
+
+		/* data[1] == 0x02 means HEADSET_OFFLINE */
+		if (data[1] == 0x02) {
+			connected = false;
+			capacity = 100;
+		} else {
+			connected = true;
+			/* data[4] == 0x01 means charging */
+			charging = (data[4] == 0x01);
+			/* data[3] contains battery level (0-100) */
+			capacity = data[3];
+			if (capacity > 100)
+				capacity = 100;
+		}
+	}
+
+	/* Arctis Nova 7 family */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7 ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_P ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_REV2 ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_DIABLO ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_WOW ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_GEN2 ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2) {
+		if (size < 8)
+			goto schedule_work;
+
+		/* data[3] == 0x00 means HEADSET_OFFLINE */
+		if (data[3] == 0x00) {
+			connected = false;
+			capacity = 100;
+		} else {
+			connected = true;
+			/* data[3] == 0x01 means charging */
+			charging = (data[3] == 0x01);
+			/* data[2] contains battery level (0x00-0x04 range) */
+			capacity = steelseries_map_battery(data[2], 0x00, 0x04);
+		}
+	}
+
+	/* Arctis Nova Pro Wireless */
+	else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO ||
+		 product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO_X) {
+		if (size < 16)
+			goto schedule_work;
+
+		/* data[15] contains headset status */
+		if (data[15] == 0x01) { /* HEADSET_OFFLINE */
+			connected = false;
+			capacity = 100;
+		} else if (data[15] == 0x02) { /* HEADSET_CABLE_CHARGING */
+			connected = true;
+			charging = true;
+			/* data[6] contains battery level (0x00-0x08 range) */
+			capacity = steelseries_map_battery(data[6], 0x00, 0x08);
+		} else if (data[15] == 0x08) { /* HEADSET_ONLINE */
+			connected = true;
+			charging = false;
+			/* data[6] contains battery level (0x00-0x08 range) */
+			capacity = steelseries_map_battery(data[6], 0x00, 0x08);
+		} else {
+			/* Unknown status */
+			goto schedule_work;
+		}
+	}
+
+	/* Update state if changed */
+	if (connected != sd->headset_connected) {
+		hid_dbg(hdev,
+			"Connected status changed from %sconnected to %sconnected\n",
+			sd->headset_connected ? "" : "not ",
+			connected ? "" : "not ");
+		sd->headset_connected = connected;
+		steelseries_headset_set_wireless_status(hdev, connected);
+	}
+
+	if (capacity != sd->battery_capacity) {
+		hid_dbg(hdev, "Battery capacity changed from %d%% to %d%%\n",
+			sd->battery_capacity, capacity);
+		sd->battery_capacity = capacity;
+		power_supply_changed(sd->battery);
+	}
+
+	if (charging != sd->battery_charging) {
+		hid_dbg(hdev,
+			"Battery charging status changed from %scharging to %scharging\n",
+			sd->battery_charging ? "" : "not ",
+			charging ? "" : "not ");
+		sd->battery_charging = charging;
+		power_supply_changed(sd->battery);
+	}
+
+schedule_work:
+	spin_lock_irqsave(&sd->lock, flags);
+	if (!sd->removed)
+		schedule_delayed_work(&sd->battery_work,
+				msecs_to_jiffies(STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS));
+	spin_unlock_irqrestore(&sd->lock, flags);
+
+	return 0;
+}
+
+static bool steelseries_is_vendor_usage_page(struct hid_device *hdev,
+					     u8 usage_page)
+{
+	return hdev->rdesc[0] == 0x06 && hdev->rdesc[1] == usage_page &&
+	       hdev->rdesc[2] == 0xff;
+}
+
+static int steelseries_probe(struct hid_device *hdev,
+			     const struct hid_device_id *id)
+{
+	struct steelseries_device_info *info =
+		(struct steelseries_device_info *)id->driver_data;
+	struct steelseries_device *sd;
+	struct usb_interface *intf;
+	u8 interface_num;
+	int ret;
+
+	/* Legacy SRW-S1 handling */
 	if (hdev->product == USB_DEVICE_ID_STEELSERIES_SRWS1) {
 #if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
-    (IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
 		return steelseries_srws1_probe(hdev, id);
 #else
 		return -ENODEV;
 #endif
 	}
 
+	/* Get interface number for binding check */
+	if (hid_is_usb(hdev)) {
+		intf = to_usb_interface(hdev->dev.parent);
+		interface_num = intf->cur_altsetting->desc.bInterfaceNumber;
+	} else {
+		/* Non-USB devices not supported for modern Arctis */
+		return -ENODEV;
+	}
+
+	/* Interface binding logic */
+	if (info->interface_binding_mode == 0) {
+		/* Mode 0: First enumerated (interface 0) */
+		if (interface_num != 0)
+			return -ENODEV;
+	} else {
+		/* Mode 1: Check bitmask */
+		if (!(info->valid_interfaces & BIT(interface_num)))
+			return -ENODEV;
+	}
+
 	sd = devm_kzalloc(&hdev->dev, sizeof(*sd), GFP_KERNEL);
 	if (!sd)
 		return -ENOMEM;
-	hid_set_drvdata(hdev, sd);
+
 	sd->hdev = hdev;
-	sd->quirks = id->driver_data;
+	sd->info = info;
+	hid_set_drvdata(hdev, sd);
 
 	ret = hid_parse(hdev);
 	if (ret)
 		return ret;
 
-	if (sd->quirks & STEELSERIES_ARCTIS_9 &&
-			!steelseries_is_vendor_usage_page(hdev, 0xc0))
+	/* Arctis 9 requires vendor usage page check */
+	if (hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9 &&
+	    !steelseries_is_vendor_usage_page(hdev, 0xc0))
 		return -ENODEV;
 
 	spin_lock_init(&sd->lock);
@@ -567,12 +1159,21 @@ static int steelseries_probe(struct hid_device *hdev, const struct hid_device_id
 
 	ret = hid_hw_open(hdev);
 	if (ret)
-		return ret;
+		goto err_stop;
 
-	if (steelseries_headset_battery_register(sd) < 0)
-		hid_err(sd->hdev,
-			"Failed to register battery for headset\n");
+	/* Register battery if supported */
+	if (info->capabilities & SS_CAP_BATTERY) {
+		ret = steelseries_battery_register(sd);
+		if (ret < 0)
+			hid_warn(hdev, "Failed to register battery: %d\n", ret);
+	}
 
+	hid_info(hdev, "SteelSeries %s initialized\n", info->name);
+
+	return 0;
+
+err_stop:
+	hid_hw_stop(hdev);
 	return ret;
 }
 
@@ -581,9 +1182,10 @@ static void steelseries_remove(struct hid_device *hdev)
 	struct steelseries_device *sd;
 	unsigned long flags;
 
+	/* Legacy SRW-S1 */
 	if (hdev->product == USB_DEVICE_ID_STEELSERIES_SRWS1) {
 #if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
-    (IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
 		hid_hw_stop(hdev);
 #endif
 		return;
@@ -601,145 +1203,90 @@ static void steelseries_remove(struct hid_device *hdev)
 	hid_hw_stop(hdev);
 }
 
-static const __u8 *steelseries_srws1_report_fixup(struct hid_device *hdev,
-		__u8 *rdesc, unsigned int *rsize)
-{
-	if (hdev->vendor != USB_VENDOR_ID_STEELSERIES ||
-	    hdev->product != USB_DEVICE_ID_STEELSERIES_SRWS1)
-		return rdesc;
-
-	if (*rsize >= 115 && rdesc[11] == 0x02 && rdesc[13] == 0xc8
-			&& rdesc[29] == 0xbb && rdesc[40] == 0xc5) {
-		hid_info(hdev, "Fixing up Steelseries SRW-S1 report descriptor\n");
-		*rsize = sizeof(steelseries_srws1_rdesc_fixed);
-		return steelseries_srws1_rdesc_fixed;
-	}
-	return rdesc;
-}
-
-static uint8_t steelseries_headset_map_capacity(uint8_t capacity, uint8_t min_in, uint8_t max_in)
-{
-	if (capacity >= max_in)
-		return 100;
-	if (capacity <= min_in)
-		return 0;
-	return (capacity - min_in) * 100 / (max_in - min_in);
-}
-
-static int steelseries_headset_raw_event(struct hid_device *hdev,
-					struct hid_report *report, u8 *read_buf,
-					int size)
-{
-	struct steelseries_device *sd = hid_get_drvdata(hdev);
-	int capacity = sd->battery_capacity;
-	bool connected = sd->headset_connected;
-	bool charging = sd->battery_charging;
-	unsigned long flags;
-
-	/* Not a headset */
-	if (hdev->product == USB_DEVICE_ID_STEELSERIES_SRWS1)
-		return 0;
-
-	if (hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1 ||
-	    hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X) {
-		hid_dbg(sd->hdev,
-			"Parsing raw event for Arctis 1 headset (%*ph)\n", size, read_buf);
-		if (size < ARCTIS_1_BATTERY_RESPONSE_LEN ||
-		    memcmp(read_buf, arctis_1_battery_request, sizeof(arctis_1_battery_request))) {
-			if (!delayed_work_pending(&sd->battery_work))
-				goto request_battery;
-			return 0;
-		}
-		if (read_buf[2] == 0x01) {
-			connected = false;
-			capacity = 100;
-		} else {
-			connected = true;
-			capacity = read_buf[3];
-		}
-	}
-
-	if (hdev->product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9) {
-		hid_dbg(sd->hdev,
-			"Parsing raw event for Arctis 9 headset (%*ph)\n", size, read_buf);
-		if (size < ARCTIS_9_BATTERY_RESPONSE_LEN) {
-			if (!delayed_work_pending(&sd->battery_work))
-				goto request_battery;
-			return 0;
-		}
-
-		if (read_buf[0] == 0xaa && read_buf[1] == 0x01) {
-			connected = true;
-			charging = read_buf[4] == 0x01;
-
-			/*
-			 * Found no official documentation about min and max.
-			 * Values defined by testing.
-			 */
-			capacity = steelseries_headset_map_capacity(read_buf[3], 0x68, 0x9d);
-		} else {
-			/*
-			 * Device is off and sends the last known status read_buf[1] == 0x03 or
-			 * there is no known status of the device read_buf[0] == 0x55
-			 */
-			connected = false;
-			charging = false;
-		}
-	}
-
-	if (connected != sd->headset_connected) {
-		hid_dbg(sd->hdev,
-			"Connected status changed from %sconnected to %sconnected\n",
-			sd->headset_connected ? "" : "not ",
-			connected ? "" : "not ");
-		sd->headset_connected = connected;
-		steelseries_headset_set_wireless_status(hdev, connected);
-	}
-
-	if (capacity != sd->battery_capacity) {
-		hid_dbg(sd->hdev,
-			"Battery capacity changed from %d%% to %d%%\n",
-			sd->battery_capacity, capacity);
-		sd->battery_capacity = capacity;
-		power_supply_changed(sd->battery);
-	}
-
-	if (charging != sd->battery_charging) {
-		hid_dbg(sd->hdev,
-			"Battery charging status changed from %scharging to %scharging\n",
-			sd->battery_charging ? "" : "not ",
-			charging ? "" : "not ");
-		sd->battery_charging = charging;
-		power_supply_changed(sd->battery);
-	}
-
-request_battery:
-	spin_lock_irqsave(&sd->lock, flags);
-	if (!sd->removed)
-		schedule_delayed_work(&sd->battery_work,
-				msecs_to_jiffies(STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS));
-	spin_unlock_irqrestore(&sd->lock, flags);
-
-	return 0;
-}
-
 static const struct hid_device_id steelseries_devices[] = {
-	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES, USB_DEVICE_ID_STEELSERIES_SRWS1),
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_SRWS1),
 	  .driver_data = STEELSERIES_SRWS1 },
 
-	{ /* SteelSeries Arctis 1 Wireless */
-	  HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES, USB_DEVICE_ID_STEELSERIES_ARCTIS_1),
-	  .driver_data = STEELSERIES_ARCTIS_1 },
-
-	{ /* SteelSeries Arctis 1 Wireless for XBox */
-	  HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES, USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X),
-	  .driver_data = STEELSERIES_ARCTIS_1_X },
-
-	{ /* SteelSeries Arctis 9 Wireless for XBox */
-	  HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES, USB_DEVICE_ID_STEELSERIES_ARCTIS_9),
-	  .driver_data = STEELSERIES_ARCTIS_9 },
-
-	{ }
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_1),
+	  .driver_data = (unsigned long)&arctis_1_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X),
+	  .driver_data = (unsigned long)&arctis_1_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7),
+	  .driver_data = (unsigned long)&arctis_7_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_P),
+	  .driver_data = (unsigned long)&arctis_7_p_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_X),
+	  .driver_data = (unsigned long)&arctis_7_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_GEN2),
+	  .driver_data = (unsigned long)&arctis_7_gen2_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS),
+	  .driver_data = (unsigned long)&arctis_7_plus_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P),
+	  .driver_data = (unsigned long)&arctis_7_plus_p_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X),
+	  .driver_data = (unsigned long)&arctis_7_plus_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY),
+	  .driver_data = (unsigned long)&arctis_7_plus_destiny_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_9),
+	  .driver_data = (unsigned long)&arctis_9_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO),
+	  .driver_data = (unsigned long)&arctis_pro_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P),
+	  .driver_data = (unsigned long)&arctis_nova_3_p_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X),
+	  .driver_data = (unsigned long)&arctis_nova_3_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5),
+	  .driver_data = (unsigned long)&arctis_nova_5_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X),
+	  .driver_data = (unsigned long)&arctis_nova_5_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7),
+	  .driver_data = (unsigned long)&arctis_nova_7_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X),
+	  .driver_data = (unsigned long)&arctis_nova_7_x_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_P),
+	  .driver_data = (unsigned long)&arctis_nova_7_p_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_REV2),
+	  .driver_data = (unsigned long)&arctis_nova_7_x_rev2_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_DIABLO),
+	  .driver_data = (unsigned long)&arctis_nova_7_diablo_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_WOW),
+	  .driver_data = (unsigned long)&arctis_nova_7_wow_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_GEN2),
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2),
+	  .driver_data = (unsigned long)&arctis_nova_7_x_gen2_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO),
+	  .driver_data = (unsigned long)&arctis_nova_pro_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO_X),
+	  .driver_data = (unsigned long)&arctis_nova_pro_x_info },
+	{}
 };
 MODULE_DEVICE_TABLE(hid, steelseries_devices);
 
@@ -749,12 +1296,13 @@ static struct hid_driver steelseries_driver = {
 	.probe = steelseries_probe,
 	.remove = steelseries_remove,
 	.report_fixup = steelseries_srws1_report_fixup,
-	.raw_event = steelseries_headset_raw_event,
+	.raw_event = steelseries_raw_event,
 };
 
 module_hid_driver(steelseries_driver);
 MODULE_DESCRIPTION("HID driver for Steelseries devices");
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Sriman Achanta <srimanachanta@gmail.com>");
 MODULE_AUTHOR("Bastien Nocera <hadess@hadess.net>");
 MODULE_AUTHOR("Simon Wood <simon@mungewell.org>");
 MODULE_AUTHOR("Christian Mayer <git@mayer-bgk.de>");
