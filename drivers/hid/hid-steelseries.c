@@ -21,6 +21,7 @@
 #define SS_CAP_BATTERY BIT(0)
 #define SS_CAP_MIC_MUTE_LED BIT(1)
 #define SS_CAP_INACTIVE_TIME BIT(2)
+#define SS_CAP_BT_POWER_ON BIT(3)
 
 /* Legacy quirk flag for SRW-S1 */
 #define STEELSERIES_SRWS1 BIT(0)
@@ -516,7 +517,7 @@ static const struct steelseries_device_info arctis_nova_7_info = {
 	.name = "Arctis Nova 7",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_info = {
@@ -524,7 +525,7 @@ static const struct steelseries_device_info arctis_nova_7_x_info = {
 	.name = "Arctis Nova 7X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_p_info = {
@@ -532,7 +533,7 @@ static const struct steelseries_device_info arctis_nova_7_p_info = {
 	.name = "Arctis Nova 7P",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
@@ -540,7 +541,7 @@ static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
 	.name = "Arctis Nova 7X (Rev 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_diablo_info = {
@@ -548,7 +549,7 @@ static const struct steelseries_device_info arctis_nova_7_diablo_info = {
 	.name = "Arctis Nova 7 (Diablo IV Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_wow_info = {
@@ -556,7 +557,7 @@ static const struct steelseries_device_info arctis_nova_7_wow_info = {
 	.name = "Arctis Nova 7 (World of Warcraft Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_gen2_info = {
@@ -564,7 +565,7 @@ static const struct steelseries_device_info arctis_nova_7_gen2_info = {
 	.name = "Arctis Nova 7 (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
@@ -572,7 +573,7 @@ static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
 	.name = "Arctis Nova 7X (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME | SS_CAP_BT_POWER_ON,
 };
 
 static const struct steelseries_device_info arctis_nova_pro_info = {
@@ -1102,9 +1103,47 @@ static ssize_t inactive_time_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(inactive_time);
 
+/* Bluetooth when powered on */
+static ssize_t bluetooth_on_power_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "Write-only (0=off, 1=on)\n");
+}
+
+static ssize_t bluetooth_on_power_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	unsigned int value;
+	u8 data[64] = { 0 };
+	int ret;
+
+	if (kstrtouint(buf, 10, &value))
+		return -EINVAL;
+	if (value > 1)
+		return -EINVAL;
+
+	data[0] = 0x00;
+	data[1] = 0xb2;
+	data[2] = value;
+	ret = steelseries_send_output_report(hdev, data, 64);
+	if (ret >= 0) {
+		/* Send save state command as output report */
+		memset(data, 0, sizeof(data));
+		data[0] = 0x00;
+		data[1] = 0x09;
+		steelseries_send_output_report(hdev, data, 64);
+	}
+
+	return (ret < 0) ? ret : count;
+}
+static DEVICE_ATTR_RW(bluetooth_on_power);
+
 /* Attribute group setup based on capabilities */
 static struct attribute *steelseries_attrs[] = {
 	&dev_attr_inactive_time.attr,
+	&dev_attr_bluetooth_on_power.attr,
 	NULL
 };
 
@@ -1118,6 +1157,8 @@ static umode_t steelseries_attr_is_visible(struct kobject *kobj,
 
 	if (attr == &dev_attr_inactive_time.attr)
 		return (caps & SS_CAP_INACTIVE_TIME) ? attr->mode : 0;
+	if (attr == &dev_attr_bluetooth_on_power.attr)
+		return (caps & SS_CAP_BT_POWER_ON) ? attr->mode : 0;
 
 	return 0;
 }
