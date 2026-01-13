@@ -20,6 +20,7 @@
 
 #define SS_CAP_BATTERY BIT(0)
 #define SS_CAP_MIC_MUTE_LED BIT(1)
+#define SS_CAP_INACTIVE_TIME BIT(2)
 
 /* Legacy quirk flag for SRW-S1 */
 #define STEELSERIES_SRWS1 BIT(0)
@@ -379,7 +380,7 @@ static const struct steelseries_device_info arctis_1_info = {
 	.name = "Arctis 1 Wireless",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_1_x_info = {
@@ -387,7 +388,7 @@ static const struct steelseries_device_info arctis_1_x_info = {
 	.name = "Arctis 1 Wireless for Xbox",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_info = {
@@ -395,7 +396,7 @@ static const struct steelseries_device_info arctis_7_info = {
 	.name = "Arctis 7",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(5),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_p_info = {
@@ -403,7 +404,7 @@ static const struct steelseries_device_info arctis_7_p_info = {
 	.name = "Arctis 7P",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_x_info = {
@@ -411,7 +412,7 @@ static const struct steelseries_device_info arctis_7_x_info = {
 	.name = "Arctis 7X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_gen2_info = {
@@ -419,7 +420,7 @@ static const struct steelseries_device_info arctis_7_gen2_info = {
 	.name = "Arctis 7 (2019 Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(5),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_plus_info = {
@@ -427,7 +428,7 @@ static const struct steelseries_device_info arctis_7_plus_info = {
 	.name = "Arctis 7+",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_plus_p_info = {
@@ -435,7 +436,7 @@ static const struct steelseries_device_info arctis_7_plus_p_info = {
 	.name = "Arctis 7+ (PlayStation)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_plus_x_info = {
@@ -443,7 +444,7 @@ static const struct steelseries_device_info arctis_7_plus_x_info = {
 	.name = "Arctis 7+ (Xbox)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_7_plus_destiny_info = {
@@ -451,7 +452,7 @@ static const struct steelseries_device_info arctis_7_plus_destiny_info = {
 	.name = "Arctis 7+ (Destiny Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_9_info = {
@@ -459,7 +460,7 @@ static const struct steelseries_device_info arctis_9_info = {
 	.name = "Arctis 9",
 	.interface_binding_mode = 0,
 	.valid_interfaces = 0,
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_pro_info = {
@@ -467,7 +468,7 @@ static const struct steelseries_device_info arctis_pro_info = {
 	.name = "Arctis Pro Wireless",
 	.interface_binding_mode = 0,
 	.valid_interfaces = 0,
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_3_info = {
@@ -483,7 +484,7 @@ static const struct steelseries_device_info arctis_nova_3_p_info = {
 	.name = "Arctis Nova 3 (PlayStation)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(0),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_3_x_info = {
@@ -491,7 +492,7 @@ static const struct steelseries_device_info arctis_nova_3_x_info = {
 	.name = "Arctis Nova 3 (Xbox)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(0),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_5_info = {
@@ -499,7 +500,7 @@ static const struct steelseries_device_info arctis_nova_5_info = {
 	.name = "Arctis Nova 5",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_5_x_info = {
@@ -507,7 +508,7 @@ static const struct steelseries_device_info arctis_nova_5_x_info = {
 	.name = "Arctis Nova 5X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_info = {
@@ -515,7 +516,7 @@ static const struct steelseries_device_info arctis_nova_7_info = {
 	.name = "Arctis Nova 7",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_info = {
@@ -523,7 +524,7 @@ static const struct steelseries_device_info arctis_nova_7_x_info = {
 	.name = "Arctis Nova 7X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_p_info = {
@@ -531,7 +532,7 @@ static const struct steelseries_device_info arctis_nova_7_p_info = {
 	.name = "Arctis Nova 7P",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
@@ -539,7 +540,7 @@ static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
 	.name = "Arctis Nova 7X (Rev 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_diablo_info = {
@@ -547,7 +548,7 @@ static const struct steelseries_device_info arctis_nova_7_diablo_info = {
 	.name = "Arctis Nova 7 (Diablo IV Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_wow_info = {
@@ -555,7 +556,7 @@ static const struct steelseries_device_info arctis_nova_7_wow_info = {
 	.name = "Arctis Nova 7 (World of Warcraft Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_gen2_info = {
@@ -563,7 +564,7 @@ static const struct steelseries_device_info arctis_nova_7_gen2_info = {
 	.name = "Arctis Nova 7 (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
@@ -571,7 +572,7 @@ static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
 	.name = "Arctis Nova 7X (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_pro_info = {
@@ -579,7 +580,7 @@ static const struct steelseries_device_info arctis_nova_pro_info = {
 	.name = "Arctis Nova Pro Wireless",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(4),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 static const struct steelseries_device_info arctis_nova_pro_x_info = {
@@ -587,7 +588,7 @@ static const struct steelseries_device_info arctis_nova_pro_x_info = {
 	.name = "Arctis Nova Pro Wireless (Xbox)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(4),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_INACTIVE_TIME,
 };
 
 #define STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS 3000
@@ -936,6 +937,195 @@ static int steelseries_mute_led_register(struct steelseries_device *sd)
 }
 
 #endif /* CONFIG_LEDS_CLASS */
+
+/* Sysfs attributes */
+
+/* Inactive time attribute */
+static ssize_t inactive_time_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "Write-only attribute (0-90 minutes)\n");
+}
+
+static ssize_t inactive_time_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	u16 product = hdev->product;
+	unsigned int value;
+	u8 data[64] = { 0 };
+	int ret;
+
+	if (kstrtouint(buf, 10, &value))
+		return -EINVAL;
+	if (value > 90)
+		return -EINVAL;
+
+	/* Device-specific mappings */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1 ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_P ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_X) {
+		data[0] = 0x06;
+		data[1] = 0x53;
+		data[2] = value;
+		ret = steelseries_send_feature_report(hdev, data, 31);
+		if (ret >= 0) {
+			data[0] = 0x06;
+			data[1] = 0x09;
+			steelseries_send_feature_report(hdev, data, 31);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7 ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_GEN2) {
+		data[0] = 0x06;
+		data[1] = 0x51;
+		data[2] = value;
+		ret = steelseries_send_feature_report(hdev, data, 31);
+		if (ret >= 0) {
+			data[0] = 0x06;
+			data[1] = 0x09;
+			steelseries_send_feature_report(hdev, data, 31);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY) {
+		data[0] = 0x00;
+		data[1] = 0xa3;
+		data[2] = value;
+		ret = steelseries_send_feature_report(hdev, data, 64);
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_9) {
+		/* Arctis 9 uses seconds */
+		u32 seconds = value * 60;
+
+		data[0] = 0x04;
+		data[1] = 0x00;
+		data[2] = (seconds >> 8) & 0xff;
+		data[3] = seconds & 0xff;
+		ret = steelseries_send_feature_report(hdev, data, 31);
+		if (ret >= 0) {
+			data[0] = 0x90;
+			data[1] = 0x00;
+			steelseries_send_feature_report(hdev, data, 31);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO) {
+		/* Pro Wireless uses 10-minute increments */
+		u8 increments = value / 10;
+
+		data[0] = 0x3c;
+		data[1] = 0xAA;
+		data[2] = increments;
+		ret = steelseries_send_feature_report(hdev, data, 31);
+		if (ret >= 0) {
+			data[0] = 0x90;
+			data[1] = 0xAA;
+			steelseries_send_feature_report(hdev, data, 31);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X) {
+		/* Map to specific values */
+		u8 mapped;
+
+		if (value >= 90)
+			mapped = 90;
+		else if (value >= 75)
+			mapped = 75;
+		else if (value >= 60)
+			mapped = 60;
+		else if (value >= 45)
+			mapped = 45;
+		else if (value >= 30)
+			mapped = 30;
+		else if (value >= 15)
+			mapped = 15;
+		else if (value >= 10)
+			mapped = 10;
+		else if (value >= 5)
+			mapped = 5;
+		else if (value >= 1)
+			mapped = 1;
+		else
+			mapped = 0;
+
+		data[0] = 0xa3;
+		data[1] = mapped;
+		ret = steelseries_send_output_report(hdev, data, 64);
+		if (ret >= 0) {
+			data[0] = 0x09;
+			steelseries_send_output_report(hdev, data, 64);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO_X) {
+		/* Map to enum values */
+		u8 mapped;
+
+		if (value >= 45)
+			mapped = 6;
+		else if (value >= 23)
+			mapped = 5;
+		else if (value >= 13)
+			mapped = 4;
+		else if (value >= 8)
+			mapped = 3;
+		else if (value >= 3)
+			mapped = 2;
+		else if (value > 0)
+			mapped = 1;
+		else
+			mapped = 0;
+
+		data[0] = 0x06;
+		data[1] = 0xc1;
+		data[2] = mapped;
+		ret = steelseries_send_output_report(hdev, data, 31);
+		if (ret >= 0) {
+			data[0] = 0x06;
+			data[1] = 0x09;
+			steelseries_send_output_report(hdev, data, 31);
+		}
+	} else {
+		/* Nova 5/7 series */
+		data[0] = 0x00;
+		data[1] = 0xa3;
+		data[2] = value;
+		ret = steelseries_send_output_report(hdev, data, 64);
+		if (ret >= 0) {
+			memset(data, 0, sizeof(data));
+			data[0] = 0x00;
+			data[1] = 0x09;
+			steelseries_send_output_report(hdev, data, 64);
+		}
+	}
+
+	return (ret < 0) ? ret : count;
+}
+static DEVICE_ATTR_RW(inactive_time);
+
+/* Attribute group setup based on capabilities */
+static struct attribute *steelseries_attrs[] = {
+	&dev_attr_inactive_time.attr,
+	NULL
+};
+
+static umode_t steelseries_attr_is_visible(struct kobject *kobj,
+					   struct attribute *attr, int n)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned long caps = sd->info->capabilities;
+
+	if (attr == &dev_attr_inactive_time.attr)
+		return (caps & SS_CAP_INACTIVE_TIME) ? attr->mode : 0;
+
+	return 0;
+}
+
+static const struct attribute_group steelseries_attr_group = {
+	.attrs = steelseries_attrs,
+	.is_visible = steelseries_attr_is_visible,
+};
 
 static int steelseries_arctis_1_request_battery(struct hid_device *hdev)
 {
@@ -1308,6 +1498,11 @@ static int steelseries_probe(struct hid_device *hdev,
 	}
 #endif
 
+	/* Create sysfs attributes */
+	ret = sysfs_create_group(&hdev->dev.kobj, &steelseries_attr_group);
+	if (ret)
+		hid_warn(hdev, "Failed to create sysfs attributes: %d\n", ret);
+
 	hid_info(hdev, "SteelSeries %s initialized\n", info->name);
 
 	return 0;
@@ -1332,6 +1527,8 @@ static void steelseries_remove(struct hid_device *hdev)
 	}
 
 	sd = hid_get_drvdata(hdev);
+
+	sysfs_remove_group(&hdev->dev.kobj, &steelseries_attr_group);
 
 	spin_lock_irqsave(&sd->lock, flags);
 	sd->removed = true;
