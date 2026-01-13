@@ -19,6 +19,7 @@
 #include "hid-ids.h"
 
 #define SS_CAP_BATTERY BIT(0)
+#define SS_CAP_MIC_MUTE_LED BIT(1)
 
 /* Legacy quirk flag for SRW-S1 */
 #define STEELSERIES_SRWS1 BIT(0)
@@ -42,6 +43,9 @@ struct steelseries_device {
 	u8 battery_capacity;
 	bool headset_connected;
 	bool battery_charging;
+
+	/* LED subsystem */
+	struct led_classdev mute_led;
 
 	/* Synchronization */
 	spinlock_t lock;
@@ -466,6 +470,14 @@ static const struct steelseries_device_info arctis_pro_info = {
 	.capabilities = SS_CAP_BATTERY,
 };
 
+static const struct steelseries_device_info arctis_nova_3_info = {
+	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3,
+	.name = "Arctis Nova 3",
+	.interface_binding_mode = 1,
+	.valid_interfaces = BIT(4),
+	.capabilities = SS_CAP_MIC_MUTE_LED,
+};
+
 static const struct steelseries_device_info arctis_nova_3_p_info = {
 	.product_id = USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P,
 	.name = "Arctis Nova 3 (PlayStation)",
@@ -487,7 +499,7 @@ static const struct steelseries_device_info arctis_nova_5_info = {
 	.name = "Arctis Nova 5",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_5_x_info = {
@@ -495,7 +507,7 @@ static const struct steelseries_device_info arctis_nova_5_x_info = {
 	.name = "Arctis Nova 5X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_info = {
@@ -503,7 +515,7 @@ static const struct steelseries_device_info arctis_nova_7_info = {
 	.name = "Arctis Nova 7",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_info = {
@@ -511,7 +523,7 @@ static const struct steelseries_device_info arctis_nova_7_x_info = {
 	.name = "Arctis Nova 7X",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_p_info = {
@@ -519,7 +531,7 @@ static const struct steelseries_device_info arctis_nova_7_p_info = {
 	.name = "Arctis Nova 7P",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
@@ -527,7 +539,7 @@ static const struct steelseries_device_info arctis_nova_7_x_rev2_info = {
 	.name = "Arctis Nova 7X (Rev 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_diablo_info = {
@@ -535,7 +547,7 @@ static const struct steelseries_device_info arctis_nova_7_diablo_info = {
 	.name = "Arctis Nova 7 (Diablo IV Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_wow_info = {
@@ -543,7 +555,7 @@ static const struct steelseries_device_info arctis_nova_7_wow_info = {
 	.name = "Arctis Nova 7 (World of Warcraft Edition)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_gen2_info = {
@@ -551,7 +563,7 @@ static const struct steelseries_device_info arctis_nova_7_gen2_info = {
 	.name = "Arctis Nova 7 (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
@@ -559,7 +571,7 @@ static const struct steelseries_device_info arctis_nova_7_x_gen2_info = {
 	.name = "Arctis Nova 7X (Gen 2)",
 	.interface_binding_mode = 1,
 	.valid_interfaces = BIT(3),
-	.capabilities = SS_CAP_BATTERY,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_MUTE_LED,
 };
 
 static const struct steelseries_device_info arctis_nova_pro_info = {
@@ -806,6 +818,124 @@ static int steelseries_send_output_report(struct hid_device *hdev,
 
 	return 0;
 }
+
+/* LED subsystem support */
+#if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+
+static int steelseries_mute_led_brightness_set(struct led_classdev *led_cdev,
+						enum led_brightness brightness)
+{
+	struct steelseries_device *sd = container_of(led_cdev,
+						      struct steelseries_device,
+						      mute_led);
+	struct hid_device *hdev = sd->hdev;
+	u16 product = hdev->product;
+	u8 data[64] = { 0 };
+	u8 value = brightness;
+	int ret;
+
+	/* Device-specific validation and mapping */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3) {
+		if (value > 3)
+			value = 3;
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5 ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X) {
+		if (value > 10)
+			value = 10;
+		/* Map special values */
+		if (value == 2)
+			value = 0x04;
+		else if (value == 3)
+			value = 0x0a;
+	} else {
+		/* Nova 7 series and others */
+		if (value > 3)
+			value = 3;
+	}
+
+	/* Send device-specific commands */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3) {
+		data[0] = 0x06;
+		data[1] = 0xae;
+		data[2] = value;
+		ret = steelseries_send_output_report(hdev, data, 64);
+		if (ret >= 0) {
+			memset(data, 0, sizeof(data));
+			data[0] = 0x06;
+			data[1] = 0x09;
+			ret = steelseries_send_output_report(hdev, data, 64);
+		}
+	} else if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5 ||
+		   product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X) {
+		data[0] = 0x00;
+		data[1] = 0xae;
+		data[2] = value;
+		ret = steelseries_send_output_report(hdev, data, 64);
+		if (ret >= 0) {
+			memset(data, 0, sizeof(data));
+			data[0] = 0x00;
+			data[1] = 0x09;
+			ret = steelseries_send_output_report(hdev, data, 64);
+			if (ret >= 0) {
+				memset(data, 0, sizeof(data));
+				data[0] = 0x00;
+				data[1] = 0x35;
+				data[2] = 0x01;
+				ret = steelseries_send_output_report(hdev, data, 64);
+			}
+		}
+	} else {
+		/* Nova 7 series */
+		data[0] = 0x00;
+		data[1] = 0xae;
+		data[2] = value;
+		ret = steelseries_send_output_report(hdev, data, 64);
+		if (ret >= 0) {
+			memset(data, 0, sizeof(data));
+			data[0] = 0x00;
+			data[1] = 0x09;
+			ret = steelseries_send_output_report(hdev, data, 64);
+		}
+	}
+
+	return ret;
+}
+
+static int steelseries_mute_led_register(struct steelseries_device *sd)
+{
+	struct hid_device *hdev = sd->hdev;
+	u16 product = hdev->product;
+	int max_brightness;
+	int ret;
+
+	/* Determine max brightness based on device */
+	if (product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5 ||
+	    product == USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X) {
+		max_brightness = 10;
+	} else {
+		max_brightness = 3;
+	}
+
+	sd->mute_led.name = devm_kasprintf(&hdev->dev, GFP_KERNEL,
+					   "%s:mute", dev_name(&hdev->dev));
+	if (!sd->mute_led.name)
+		return -ENOMEM;
+
+	sd->mute_led.brightness_set_blocking = steelseries_mute_led_brightness_set;
+	sd->mute_led.max_brightness = max_brightness;
+	sd->mute_led.flags = LED_RETAIN_AT_SHUTDOWN;
+
+	ret = devm_led_classdev_register(&hdev->dev, &sd->mute_led);
+	if (ret < 0) {
+		hid_err(hdev, "Failed to register mute LED: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+#endif /* CONFIG_LEDS_CLASS */
 
 static int steelseries_arctis_1_request_battery(struct hid_device *hdev)
 {
@@ -1168,6 +1298,16 @@ static int steelseries_probe(struct hid_device *hdev,
 			hid_warn(hdev, "Failed to register battery: %d\n", ret);
 	}
 
+	/* Register mute LED if supported */
+#if IS_BUILTIN(CONFIG_LEDS_CLASS) || \
+	(IS_MODULE(CONFIG_LEDS_CLASS) && IS_MODULE(CONFIG_HID_STEELSERIES))
+	if (info->capabilities & SS_CAP_MIC_MUTE_LED) {
+		ret = steelseries_mute_led_register(sd);
+		if (ret < 0)
+			hid_warn(hdev, "Failed to register mute LED: %d\n", ret);
+	}
+#endif
+
 	hid_info(hdev, "SteelSeries %s initialized\n", info->name);
 
 	return 0;
@@ -1244,6 +1384,9 @@ static const struct hid_device_id steelseries_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_PRO),
 	  .driver_data = (unsigned long)&arctis_pro_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3),
+	  .driver_data = (unsigned long)&arctis_nova_3_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_P),
 	  .driver_data = (unsigned long)&arctis_nova_3_p_info },
