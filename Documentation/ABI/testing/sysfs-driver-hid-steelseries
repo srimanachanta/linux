@@ -1,0 +1,83 @@
+What:		/sys/bus/hid/drivers/steelseries/<dev>/mic_volume
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) The microphone volume level (0-7)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/sidetone
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) The sidetone level
+		* 0 = off
+		* 1 = low
+		* 2 = medium
+		* 3 = high
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/volume_limiter
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) Volume limiter toggle (0=off, 1=on)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/inactive_timeout
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) Inactive auto-power-off timeout. Accepts the following
+		raw encoded values:
+		* 0 = never
+		* 1 = 1 minute
+		* 5 = 5 minutes
+		* 10 = 10 minutes
+		* 15 = 15 minutes
+		* 30 = 30 minutes
+		* 45 = 45 minutes
+		* 60 = 1 hour
+		* 75 = 75 minutes
+		* 90 = 90 minutes
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/bt_auto_enable
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) Whether Bluetooth is enabled on headset power-on
+		(0=off, 1=on)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/bt_call_volume
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RW) Bluetooth call volume behavior
+		* 0 = do nothing
+		* 1 = lower
+		* 2 = mute
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/chatmix_chat
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RO) The current chat channel level of the chatmix dial (0-64)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/chatmix_game
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RO) The current game channel level of the chatmix dial (0-64)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/mic_muted
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RO) The hardware microphone mute status
+		* 0 = unmuted
+		* 1 = muted (microphone physically disabled by headset)
+
+What:		/sys/bus/hid/drivers/steelseries/<dev>/bt_status
+Date:		February 2026
+KernelVersion:	6.20
+Contact:	Sriman Achanta <srimanachanta@gmail.com>
+Description:	(RO) The Bluetooth radio status
+		* 0 = off
+		* 1 = on, no device connected
+		* 2 = on, device connected

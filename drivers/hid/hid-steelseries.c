@@ -15,12 +15,24 @@
 #include <linux/power_supply.h>
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
-
 #include "hid-ids.h"
 
-#define SS_CAP_BATTERY BIT(0)
+#define SS_CAP_BATTERY			BIT(0)
+#define SS_CAP_MIC_VOLUME		BIT(1)
+#define SS_CAP_SIDETONE			BIT(2)
+#define SS_CAP_MIC_MUTE_LED_BRIGHTNESS	BIT(3)
+#define SS_CAP_VOLUME_LIMITER		BIT(4)
+#define SS_CAP_INACTIVE_TIME		BIT(5)
+#define SS_CAP_BT_AUTO_ENABLE		BIT(6)
+#define SS_CAP_BT_CALL_VOLUME		BIT(7)
+#define SS_CAP_CHATMIX			BIT(8)
+#define SS_CAP_MIC_MUTE			BIT(9)
+#define SS_CAP_BT_ENABLED		BIT(10)
+#define SS_CAP_BT_DEVICE_CONNECTED	BIT(11)
 
-#define SS_QUIRK_STATUS_SYNC_POLL BIT(0)
+#define SS_QUIRK_STATUS_SYNC_POLL	BIT(0)
+
+struct steelseries_device;
 
 struct steelseries_device_info {
 	unsigned long capabilities;
@@ -29,9 +41,12 @@ struct steelseries_device_info {
 	u8 sync_interface;
 	u8 async_interface;
 
-	int (*request_battery)(struct hid_device *hdev);
-	void (*parse_battery)(u8 *data, int size, int *capacity,
-			      bool *connected, bool *charging);
+	int (*request_status)(struct hid_device *hdev);
+	void (*parse_status)(struct steelseries_device *sd, u8 *data, int size);
+
+	int (*request_settings)(struct hid_device *hdev);
+	void (*parse_settings)(struct steelseries_device *sd, u8 *data, int size);
+	int (*write_setting)(struct hid_device *hdev, u8 command, u8 value);
 };
 
 struct steelseries_device {
@@ -40,12 +55,27 @@ struct steelseries_device {
 
 	bool use_async_protocol;
 
+	struct delayed_work status_work;
+	struct delayed_work settings_work;
+
 	struct power_supply_desc battery_desc;
 	struct power_supply *battery;
-	struct delayed_work battery_work;
-	u8 battery_capacity;
 	bool headset_connected;
+	u8 battery_capacity;
 	bool battery_charging;
+
+	u8 mic_volume;
+	u8 sidetone;
+	u8 volume_limiter;
+	u8 inactive_timeout;
+	u8 bt_auto_enable;
+	u8 bt_call_volume;
+
+	u8 chatmix_chat;
+	u8 chatmix_game;
+	bool mic_muted;
+	bool bt_enabled;
+	bool bt_device_connected;
 
 	spinlock_t lock;
 	bool removed;
@@ -373,114 +403,93 @@ static const __u8 *steelseries_srws1_report_fixup(struct hid_device *hdev,
 	return rdesc;
 }
 
-static int steelseries_arctis_1_request_battery(struct hid_device *hdev);
-static int steelseries_arctis_9_request_battery(struct hid_device *hdev);
-static int steelseries_arctis_nova_request_battery(struct hid_device *hdev);
-static int steelseries_arctis_nova_3p_request_battery(struct hid_device *hdev);
+/*
+ * Headset report helpers
+ */
 
-static void steelseries_arctis_1_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging);
-static void steelseries_arctis_7_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging);
-static void steelseries_arctis_7_plus_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging);
-static void steelseries_arctis_9_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging);
-static void steelseries_arctis_nova_3_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging);
-static void steelseries_arctis_nova_5_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging);
-static void steelseries_arctis_nova_7_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging);
-static void steelseries_arctis_nova_7_gen2_parse_report(u8 *data, int size,
-							 int *capacity, bool *connected,
-							 bool *charging);
-static void steelseries_arctis_nova_pro_parse_report(u8 *data, int size,
-						      int *capacity, bool *connected,
-						      bool *charging);
+static int steelseries_send_report(struct hid_device *hdev, const u8 *data,
+				    int len, enum hid_report_type type)
+{
+	u8 *buf;
+	int ret;
 
-static const struct steelseries_device_info srws1_info = { };
+	buf = kmemdup(data, len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
 
-static const struct steelseries_device_info arctis_1_info = {
-	.sync_interface = 3,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_1_request_battery,
-	.parse_battery = steelseries_arctis_1_parse_report,
-};
+	ret = hid_hw_raw_request(hdev, data[0], buf, len, type,
+				 HID_REQ_SET_REPORT);
+	kfree(buf);
 
-static const struct steelseries_device_info arctis_7_info = {
-	.sync_interface = 5,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_7_parse_report,
-};
+	if (ret < 0)
+		return ret;
+	if (ret < len)
+		return -EIO;
 
-static const struct steelseries_device_info arctis_7_plus_info = {
-	.sync_interface = 3,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_7_plus_parse_report,
-};
+	return 0;
+}
 
-static const struct steelseries_device_info arctis_9_info = {
-	.sync_interface = 0,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_9_request_battery,
-	.parse_battery = steelseries_arctis_9_parse_report,
-};
+static inline int steelseries_send_feature_report(struct hid_device *hdev,
+						   const u8 *data, int len)
+{
+	return steelseries_send_report(hdev, data, len, HID_FEATURE_REPORT);
+}
 
-static const struct steelseries_device_info arctis_nova_3_info = {
-	.sync_interface = 0,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_3p_request_battery,
-	.parse_battery = steelseries_arctis_nova_3_parse_report,
-};
+static inline int steelseries_send_output_report(struct hid_device *hdev,
+						  const u8 *data, int len)
+{
+	return steelseries_send_report(hdev, data, len, HID_OUTPUT_REPORT);
+}
 
-static const struct steelseries_device_info arctis_nova_5_info = {
-	.sync_interface = 3,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_nova_5_parse_report,
-};
+/*
+ * Headset status request functions
+ */
 
-static const struct steelseries_device_info arctis_nova_7_info = {
-	.sync_interface = 3,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_nova_7_parse_report,
-};
+static int steelseries_arctis_1_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x06, 0x12 };
 
-static const struct steelseries_device_info arctis_nova_7_async_info = {
-	.sync_interface = 3,
-	.async_interface = 5,
-	.capabilities = SS_CAP_BATTERY,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_nova_7_gen2_parse_report,
-};
+	return steelseries_send_feature_report(hdev, data, sizeof(data));
+}
 
-static const struct steelseries_device_info arctis_nova_pro_info = {
-	.sync_interface = 4,
-	.capabilities = SS_CAP_BATTERY,
-	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
-	.request_battery = steelseries_arctis_nova_request_battery,
-	.parse_battery = steelseries_arctis_nova_pro_parse_report,
-};
+static int steelseries_arctis_7_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x06, 0x18 };
 
-#define STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS 3000
+	return steelseries_send_feature_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_9_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0x20 };
+
+	return steelseries_send_feature_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_nova_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_nova_3p_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+static int steelseries_arctis_nova_pro_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x06, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
+/*
+ * Headset battery helpers
+ */
 
 static int battery_capacity_to_level(int capacity)
 {
@@ -491,7 +500,7 @@ static int battery_capacity_to_level(int capacity)
 	return POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 }
 
-static u8 steelseries_map_battery(u8 capacity, u8 min_in, u8 max_in)
+static u8 steelseries_map(u8 capacity, u8 min_in, u8 max_in)
 {
 	if (capacity >= max_in)
 		return 100;
@@ -499,6 +508,326 @@ static u8 steelseries_map_battery(u8 capacity, u8 min_in, u8 max_in)
 		return 0;
 	return (capacity - min_in) * 100 / (max_in - min_in);
 }
+
+/*
+ * Headset status parse functions
+ */
+
+static void steelseries_arctis_1_parse_status(struct steelseries_device *sd,
+					      u8 *data, int size)
+{
+	sd->headset_connected = (data[2] == 0x01);
+	sd->battery_capacity = data[3];
+}
+
+static void steelseries_arctis_7_parse_status(struct steelseries_device *sd,
+					      u8 *data, int size)
+{
+	sd->headset_connected = true;
+	sd->battery_capacity = data[2];
+}
+
+static void steelseries_arctis_7_plus_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (data[0] == 0xb0) {
+		sd->headset_connected = !(data[1] == 0x01);
+		sd->battery_capacity = steelseries_map(data[2], 0x00, 0x04);
+		sd->battery_charging = (data[3] == 0x01);
+		sd->chatmix_game = steelseries_map(data[4], 0x00, 0x64);
+		sd->chatmix_chat = steelseries_map(data[5], 0x00, 0x64);
+	}
+}
+
+static void steelseries_arctis_9_parse_status(struct steelseries_device *sd,
+					      u8 *data, int size)
+{
+	sd->headset_connected = true;
+	sd->battery_charging = (data[4] == 0x01);
+	sd->battery_capacity = steelseries_map(data[3], 0x64, 0x9A);
+	sd->chatmix_game = steelseries_map(data[9], 0x00, 0x13);
+	sd->chatmix_chat = steelseries_map(data[10], 0x00, 0x13);
+}
+
+static void steelseries_arctis_nova_3_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (data[0] == 0xb0) {
+		sd->headset_connected = !(data[1] == 0x02);
+		sd->battery_capacity = steelseries_map(data[3], 0x00, 0x64);
+	}
+}
+
+static void steelseries_arctis_nova_5_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (data[0] == 0xb0) {
+		sd->headset_connected = !(data[1] == 0x02);
+		sd->battery_capacity = data[3];
+		sd->battery_charging = (data[4] == 0x01);
+		sd->chatmix_chat = data[5];
+		sd->chatmix_game = data[6];
+	}
+}
+
+static void steelseries_arctis_nova_7_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (data[0] == 0xb0) {
+		sd->headset_connected = (data[1] == 0x03);
+		sd->battery_capacity = steelseries_map(data[2], 0x00, 0x04);
+		sd->battery_charging = (data[3] == 0x01);
+		sd->chatmix_game = data[4];
+		sd->chatmix_chat = data[5];	
+	}
+}
+
+static void steelseries_arctis_nova_7_gen2_parse_status(struct steelseries_device *sd,
+							u8 *data, int size)
+{
+	if (size < 2)
+		return;
+
+	switch (data[0]) {
+	case 0xb0:
+		sd->headset_connected = (data[1] == 0x03);
+		sd->battery_capacity = data[2];
+		sd->battery_charging = (data[3] == 0x01);
+		sd->chatmix_game = data[4];
+		sd->chatmix_chat = data[5];
+		switch (data[6]) {
+		case 0x00:
+			sd->bt_enabled = false;
+			sd->bt_device_connected = false;
+			break;
+		case 0x03:
+			sd->bt_enabled = true;
+			sd->bt_device_connected = false;
+			break;
+		case 0x02:
+			sd->bt_enabled = true;
+			sd->bt_device_connected = true;
+			break;
+		}
+		sd->mic_muted = (data[9] == 0x01);
+		break;
+	case 0xb7:
+		sd->battery_capacity = data[1];
+		break;
+	case 0xb9:
+		sd->headset_connected = (data[1] == 0x03);
+		break;
+	case 0xbb:
+		sd->battery_charging = (data[1] == 0x01);
+		break;
+	case 0x45:
+		sd->chatmix_game = data[1];
+		sd->chatmix_chat = data[2];
+		break;
+	case 0x52:
+		sd->mic_muted = (data[2] == 0x01);
+		break;
+	case 0xb5:
+		if (data[1] == 0x01) {
+			sd->bt_enabled = false;
+			sd->bt_device_connected = false;
+		} else if (data[1] == 0x04) {
+			sd->bt_enabled = true;
+			sd->bt_device_connected = (data[2] == 0x01);
+		}
+		break;
+	}
+}
+
+static void steelseries_arctis_nova_pro_parse_status(struct steelseries_device *sd,
+						     u8 *data, int size)
+{
+	if (data[0] == 0xb0) {
+		sd->headset_connected = (data[15] == 0x08 || data[15] == 0x02);
+		sd->battery_capacity = steelseries_map(data[6], 0x00, 0x08);
+		sd->battery_charging = (data[15] == 0x02);	
+	}
+}
+
+static int steelseries_arctis_nova_7_gen2_request_settings(struct hid_device *hdev)
+{
+	const u8 audio_data[] = { 0x00, 0x20 };
+	const u8 device_data[] = { 0x00, 0xa0 };
+	int ret;
+
+	ret = steelseries_send_output_report(hdev, audio_data, sizeof(audio_data));
+	if (ret)
+		return ret;
+
+	msleep(10);
+
+	return steelseries_send_output_report(hdev, device_data, sizeof(device_data));
+}
+
+static void steelseries_arctis_nova_7_gen2_parse_settings(
+	struct steelseries_device *sd, u8 *data, int size)
+{
+	if (size < 2)
+		return;
+
+	switch (data[0]) {
+	case 0x20:
+		sd->mic_volume = data[1];
+		sd->sidetone = data[2];
+		sd->volume_limiter = data[3];
+		break;
+	case 0xa0:
+		sd->inactive_timeout = data[1];
+		/* data[2] is mute LED brightness */
+		sd->bt_auto_enable = data[3];
+		sd->bt_call_volume = data[4];
+		break;
+	case 0x37:
+		sd->mic_volume = data[1];
+		break;
+	case 0x39:
+		sd->sidetone = data[1];
+		break;
+	case 0x3a:
+		sd->volume_limiter = data[1];
+		break;
+	case 0xa3:
+		sd->inactive_timeout = data[1];
+		break;
+	case 0xae:
+		/* mute LED brightness */
+		break;
+	case 0xb2:
+		sd->bt_auto_enable = data[1];
+		break;
+	case 0xb3:
+		sd->bt_call_volume = data[1];
+		break;
+	}
+}
+
+static int steelseries_arctis_nova_7_gen2_write_setting(struct hid_device *hdev,
+							u8 command, u8 value)
+{
+	const u8 write_data[] = { 0x00, command, value };
+	const u8 save_data[] = { 0x00, 0x09 };
+	int ret;
+
+	ret = steelseries_send_output_report(hdev, write_data, sizeof(write_data));
+	if (ret)
+		return ret;
+
+	msleep(10);
+
+	return steelseries_send_output_report(hdev, save_data, sizeof(save_data));
+}
+
+/*
+ * Device info definitions
+ */
+
+static const struct steelseries_device_info srws1_info = { };
+
+static const struct steelseries_device_info arctis_1_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_1_request_status,
+	.parse_status = steelseries_arctis_1_parse_status,
+};
+
+static const struct steelseries_device_info arctis_7_info = {
+	.sync_interface = 5,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_7_request_status,
+	.parse_status = steelseries_arctis_7_parse_status,
+};
+
+static const struct steelseries_device_info arctis_7_plus_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_7_plus_parse_status,
+};
+
+static const struct steelseries_device_info arctis_9_info = {
+	.sync_interface = 0,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_9_request_status,
+	.parse_status = steelseries_arctis_9_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_3_info = {
+	.sync_interface = 4,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_3p_request_status,
+	.parse_status = steelseries_arctis_nova_3_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_5_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_5_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_5x_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_5_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_7_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_7_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_7p_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_7_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_7_gen2_info = {
+	.sync_interface = 3,
+	.async_interface = 5,
+	.capabilities = SS_CAP_BATTERY | SS_CAP_MIC_VOLUME | SS_CAP_SIDETONE |
+			SS_CAP_MIC_MUTE_LED_BRIGHTNESS | SS_CAP_VOLUME_LIMITER |
+			SS_CAP_INACTIVE_TIME | SS_CAP_BT_AUTO_ENABLE |
+			SS_CAP_BT_CALL_VOLUME | SS_CAP_CHATMIX |
+			SS_CAP_MIC_MUTE | SS_CAP_BT_ENABLED | SS_CAP_BT_DEVICE_CONNECTED,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_7_gen2_parse_status,
+	.request_settings = steelseries_arctis_nova_7_gen2_request_settings,
+	.parse_settings = steelseries_arctis_nova_7_gen2_parse_settings,
+	.write_setting = steelseries_arctis_nova_7_gen2_write_setting,
+};
+
+static const struct steelseries_device_info arctis_nova_pro_info = {
+	.sync_interface = 4,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_pro_request_status,
+	.parse_status = steelseries_arctis_nova_pro_parse_status,
+};
+
+/*
+ * Headset wireless status and battery infrastructure
+ */
+
+#define STEELSERIES_HEADSET_STATUS_TIMEOUT_MS 3000
 
 static void steelseries_headset_set_wireless_status(struct hid_device *hdev,
 						    bool connected)
@@ -570,81 +899,32 @@ static enum power_supply_property steelseries_battery_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 };
 
-static int steelseries_send_report(struct hid_device *hdev, const u8 *data,
-				    int len, enum hid_report_type type)
-{
-	u8 *buf;
-	int ret;
+/*
+ * Delayed work handlers for status polling and settings requests
+ */
 
-	buf = kmemdup(data, len, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	ret = hid_hw_raw_request(hdev, data[0], buf, len, type,
-				 HID_REQ_SET_REPORT);
-	kfree(buf);
-
-	if (ret < 0)
-		return ret;
-	if (ret < len)
-		return -EIO;
-
-	return 0;
-}
-
-static inline int steelseries_send_feature_report(struct hid_device *hdev,
-						   const u8 *data, int len)
-{
-	return steelseries_send_report(hdev, data, len, HID_FEATURE_REPORT);
-}
-
-static inline int steelseries_send_output_report(struct hid_device *hdev,
-						  const u8 *data, int len)
-{
-	return steelseries_send_report(hdev, data, len, HID_OUTPUT_REPORT);
-}
-
-static int steelseries_arctis_1_request_battery(struct hid_device *hdev)
-{
-	const u8 data[] = { 0x06, 0x12 };
-
-	return steelseries_send_feature_report(hdev, data, sizeof(data));
-}
-
-static int steelseries_arctis_9_request_battery(struct hid_device *hdev)
-{
-	const u8 data[] = { 0x00, 0x20 };
-
-	return steelseries_send_feature_report(hdev, data, sizeof(data));
-}
-
-static int steelseries_arctis_nova_request_battery(struct hid_device *hdev)
-{
-	const u8 data[] = { 0x00, 0xb0 };
-
-	return steelseries_send_output_report(hdev, data, sizeof(data));
-}
-
-static int steelseries_arctis_nova_3p_request_battery(struct hid_device *hdev)
-{
-	const u8 data[] = { 0xb0 };
-
-	return steelseries_send_output_report(hdev, data, sizeof(data));
-}
-
-static void steelseries_battery_timer_tick(struct work_struct *work)
+static void steelseries_status_timer_work_handler(struct work_struct *work)
 {
 	struct steelseries_device *sd = container_of(
-		work, struct steelseries_device, battery_work.work);
+		work, struct steelseries_device, status_work.work);
 	unsigned long flags;
 
-	sd->info->request_battery(sd->hdev);
+	sd->info->request_status(sd->hdev);
 
 	spin_lock_irqsave(&sd->lock, flags);
 	if (!sd->removed && !sd->use_async_protocol)
-		schedule_delayed_work(&sd->battery_work,
-				msecs_to_jiffies(STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS));
+		schedule_delayed_work(&sd->status_work,
+				msecs_to_jiffies(STEELSERIES_HEADSET_STATUS_TIMEOUT_MS));
 	spin_unlock_irqrestore(&sd->lock, flags);
+}
+
+static void steelseries_settings_work_handler(struct work_struct *work)
+{
+	struct steelseries_device *sd = container_of(
+		work, struct steelseries_device, settings_work.work);
+
+	if (sd->info->request_settings)
+		sd->info->request_settings(sd->hdev);
 }
 
 static int steelseries_battery_register(struct steelseries_device *sd)
@@ -682,189 +962,377 @@ static int steelseries_battery_register(struct steelseries_device *sd)
 	}
 	power_supply_powers(sd->battery, &sd->hdev->dev);
 
-	INIT_DELAYED_WORK(&sd->battery_work, steelseries_battery_timer_tick);
+	return 0;
+}
 
-	sd->use_async_protocol = !(sd->info->quirks & SS_QUIRK_STATUS_SYNC_POLL);
+/*
+ * Sysfs attributes for headset settings and state
+ */
 
-	sd->info->request_battery(sd->hdev);
+static ssize_t mic_volume_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
 
-	if (!sd->use_async_protocol) {
-		schedule_delayed_work(&sd->battery_work,
-				msecs_to_jiffies(STEELSERIES_HEADSET_BATTERY_TIMEOUT_MS));
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->mic_volume);
+}
+
+static ssize_t mic_volume_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value) || value > 7)
+		return -EINVAL;
+
+	ret = sd->info->write_setting(hdev, 0x37, value);
+	if (ret)
+		return ret;
+
+	sd->mic_volume = value;
+	return count;
+}
+
+static ssize_t sidetone_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->sidetone);
+}
+
+static ssize_t sidetone_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value) || value > 3)
+		return -EINVAL;
+
+	ret = sd->info->write_setting(hdev, 0x39, value);
+	if (ret)
+		return ret;
+
+	sd->sidetone = value;
+	return count;
+}
+
+static ssize_t volume_limiter_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->volume_limiter);
+}
+
+static ssize_t volume_limiter_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value) || value > 1)
+		return -EINVAL;
+
+	ret = sd->info->write_setting(hdev, 0x3a, value);
+	if (ret)
+		return ret;
+
+	sd->volume_limiter = value;
+	return count;
+}
+
+static ssize_t inactive_timeout_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->inactive_timeout);
+}
+
+static ssize_t inactive_timeout_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value))
+		return -EINVAL;
+
+	switch (value) {
+	case 0x00:
+	case 0x01:
+	case 0x05:
+	case 0x0a:
+	case 0x0f:
+	case 0x1e:
+	case 0x2d:
+	case 0x3c:
+	case 0x4b:
+	case 0x5a:
+		break;
+	default:
+		return -EINVAL;
 	}
+
+	ret = sd->info->write_setting(hdev, 0xa3, value);
+	if (ret)
+		return ret;
+
+	sd->inactive_timeout = value;
+	return count;
+}
+
+static ssize_t bt_auto_enable_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->bt_auto_enable);
+}
+
+static ssize_t bt_auto_enable_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value) || value > 1)
+		return -EINVAL;
+
+	ret = sd->info->write_setting(hdev, 0xb2, value);
+	if (ret)
+		return ret;
+
+	sd->bt_auto_enable = value;
+	return count;
+}
+
+static ssize_t bt_call_volume_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->bt_call_volume);
+}
+
+static ssize_t bt_call_volume_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned int value;
+	int ret;
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &value) || value > 2)
+		return -EINVAL;
+
+	ret = sd->info->write_setting(hdev, 0xb3, value);
+	if (ret)
+		return ret;
+
+	sd->bt_call_volume = value;
+	return count;
+}
+
+static ssize_t chatmix_chat_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->chatmix_chat);
+}
+
+static ssize_t chatmix_game_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->chatmix_game);
+}
+
+static ssize_t mic_muted_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->mic_muted);
+}
+
+static ssize_t bt_enabled_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->bt_enabled);
+}
+
+static ssize_t bt_device_connected_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+
+	if (!sd->headset_connected)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", sd->bt_device_connected);
+}
+
+static DEVICE_ATTR_RW(mic_volume);
+static DEVICE_ATTR_RW(sidetone);
+static DEVICE_ATTR_RW(volume_limiter);
+static DEVICE_ATTR_RW(inactive_timeout);
+static DEVICE_ATTR_RW(bt_auto_enable);
+static DEVICE_ATTR_RW(bt_call_volume);
+static DEVICE_ATTR_RO(chatmix_chat);
+static DEVICE_ATTR_RO(chatmix_game);
+static DEVICE_ATTR_RO(mic_muted);
+static DEVICE_ATTR_RO(bt_enabled);
+static DEVICE_ATTR_RO(bt_device_connected);
+
+static struct attribute *steelseries_headset_attrs[] = {
+	&dev_attr_mic_volume.attr,
+	&dev_attr_sidetone.attr,
+	&dev_attr_volume_limiter.attr,
+	&dev_attr_inactive_timeout.attr,
+	&dev_attr_bt_auto_enable.attr,
+	&dev_attr_bt_call_volume.attr,
+	&dev_attr_chatmix_chat.attr,
+	&dev_attr_chatmix_game.attr,
+	&dev_attr_mic_muted.attr,
+	&dev_attr_bt_enabled.attr,
+	&dev_attr_bt_device_connected.attr,
+	NULL,
+};
+
+static umode_t steelseries_headset_attr_is_visible(struct kobject *kobj,
+						   struct attribute *attr,
+						   int index)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct hid_device *hdev = to_hid_device(dev);
+	struct steelseries_device *sd = hid_get_drvdata(hdev);
+	unsigned long caps;
+
+	if (!sd)
+		return 0;
+
+	caps = sd->info->capabilities;
+
+	if (attr == &dev_attr_mic_volume.attr)
+		return (caps & SS_CAP_MIC_VOLUME) ? attr->mode : 0;
+	if (attr == &dev_attr_sidetone.attr)
+		return (caps & SS_CAP_SIDETONE) ? attr->mode : 0;
+	if (attr == &dev_attr_volume_limiter.attr)
+		return (caps & SS_CAP_VOLUME_LIMITER) ? attr->mode : 0;
+	if (attr == &dev_attr_inactive_timeout.attr)
+		return (caps & SS_CAP_INACTIVE_TIME) ? attr->mode : 0;
+	if (attr == &dev_attr_bt_auto_enable.attr)
+		return (caps & SS_CAP_BT_AUTO_ENABLE) ? attr->mode : 0;
+	if (attr == &dev_attr_bt_call_volume.attr)
+		return (caps & SS_CAP_BT_CALL_VOLUME) ? attr->mode : 0;
+	if (attr == &dev_attr_chatmix_chat.attr ||
+	    attr == &dev_attr_chatmix_game.attr)
+		return (caps & SS_CAP_CHATMIX) ? attr->mode : 0;
+	if (attr == &dev_attr_mic_muted.attr)
+		return (caps & SS_CAP_MIC_MUTE) ? attr->mode : 0;
+	if (attr == &dev_attr_bt_enabled.attr)
+		return (caps & SS_CAP_BT_ENABLED) ? attr->mode : 0;
+	if (attr == &dev_attr_bt_device_connected.attr)
+		return (caps & SS_CAP_BT_DEVICE_CONNECTED) ? attr->mode : 0;
 
 	return 0;
 }
 
-static void steelseries_arctis_1_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging)
-{
-	if (size < 8)
-		return;
-
-	if (data[2] == 0x01) {
-		*connected = false;
-		*capacity = 100;
-	} else {
-		*connected = true;
-		*capacity = data[3];
-		if (*capacity > 100)
-			*capacity = 100;
-	}
-}
-
-static void steelseries_arctis_7_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging)
-{
-	if (size < 8)
-		return;
-
-	*connected = true;
-	*charging = false;
-	*capacity = data[2];
-	if (*capacity > 100)
-		*capacity = 100;
-}
-
-static void steelseries_arctis_7_plus_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging)
-{
-	if (size < 4)
-		return;
-
-	if (data[1] == 0x01) {
-		*connected = false;
-		*capacity = 100;
-	} else {
-		*connected = true;
-		*charging = (data[3] == 0x01);
-		*capacity = steelseries_map_battery(data[2], 0x00, 0x04);
-	}
-}
-
-static void steelseries_arctis_9_parse_report(u8 *data, int size,
-					       int *capacity, bool *connected,
-					       bool *charging)
-{
-	if (size < 12)
-		return;
-
-	*connected = true;
-	*charging = (data[4] == 0x01);
-	*capacity = steelseries_map_battery(data[3], 0x64, 0x9A);
-}
-
-static void steelseries_arctis_nova_3_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging)
-{
-	if (size < 4)
-		return;
-
-	if (data[1] == 0x02) {
-		*connected = false;
-		*capacity = 100;
-	} else {
-		*connected = true;
-		*charging = false;
-		*capacity = steelseries_map_battery(data[3], 0x00, 0x64);
-	}
-}
-
-static void steelseries_arctis_nova_5_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging)
-{
-	if (size < 16)
-		return;
-
-	if (data[1] == 0x02) {
-		*connected = false;
-		*capacity = 100;
-	} else {
-		*connected = true;
-		*charging = (data[4] == 0x01);
-		*capacity = data[3];
-		if (*capacity > 100)
-			*capacity = 100;
-	}
-}
-
-static void steelseries_arctis_nova_7_parse_report(u8 *data, int size,
-						    int *capacity, bool *connected,
-						    bool *charging)
-{
-	if (size < 8)
-		return;
-
-	if (data[3] == 0x00) {
-		*connected = false;
-		*capacity = 100;
-	} else {
-		*connected = true;
-		*charging = (data[3] == 0x01);
-		*capacity = steelseries_map_battery(data[2], 0x00, 0x04);
-	}
-}
-
-static void steelseries_arctis_nova_7_gen2_parse_report(u8 *data, int size,
-							 int *capacity, bool *connected,
-							 bool *charging)
-{
-	if (size < 2)
-		return;
-
-	switch (data[0]) {
-	case 0xb0:
-		if (size < 4)
-			return;
-		*connected = (data[1] == 0x03);
-		*capacity = data[2];
-		*charging = (data[3] == 0x01);
-		break;
-	case 0xb7:
-		*capacity = data[1];
-		break;
-	case 0xb9:
-		*connected = (data[1] == 0x03);
-		break;
-	case 0xbb:
-		*charging = (data[1] == 0x01);
-		break;
-	}
-}
-
-static void steelseries_arctis_nova_pro_parse_report(u8 *data, int size,
-						      int *capacity, bool *connected,
-						      bool *charging)
-{
-	if (size < 16)
-		return;
-
-	if (data[15] == 0x01) {
-		*connected = false;
-		*capacity = 100;
-	} else if (data[15] == 0x02) {
-		*connected = true;
-		*charging = true;
-		*capacity = steelseries_map_battery(data[6], 0x00, 0x08);
-	} else if (data[15] == 0x08) {
-		*connected = true;
-		*charging = false;
-		*capacity = steelseries_map_battery(data[6], 0x00, 0x08);
-	}
-}
+static const struct attribute_group steelseries_headset_attr_group = {
+	.attrs = steelseries_headset_attrs,
+	.is_visible = steelseries_headset_attr_is_visible,
+};
 
 static int steelseries_raw_event(struct hid_device *hdev,
 				 struct hid_report *report, u8 *data, int size)
 {
 	struct steelseries_device *sd = hid_get_drvdata(hdev);
-	int capacity;
-	bool connected;
-	bool charging;
+	u8 old_capacity;
+	bool old_connected;
+	bool old_charging;
 	bool is_async_interface = false;
 
 	if (hdev->product == USB_DEVICE_ID_STEELSERIES_SRWS1)
@@ -873,9 +1341,9 @@ static int steelseries_raw_event(struct hid_device *hdev,
 	if (!sd)
 		return 0;
 
-	capacity = sd->battery_capacity;
-	connected = sd->headset_connected;
-	charging = sd->battery_charging;
+	old_capacity = sd->battery_capacity;
+	old_connected = sd->headset_connected;
+	old_charging = sd->battery_charging;
 
 	if (hid_is_usb(hdev)) {
 		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
@@ -884,37 +1352,42 @@ static int steelseries_raw_event(struct hid_device *hdev,
 				      sd->info->async_interface);
 	}
 
-	sd->info->parse_battery(data, size, &capacity, &connected, &charging);
+	sd->info->parse_status(sd, data, size);
 
-	if (connected != sd->headset_connected) {
+	if (sd->info->parse_settings)
+		sd->info->parse_settings(sd, data, size);
+
+	if (sd->headset_connected != old_connected) {
 		hid_dbg(hdev,
 			"Connected status changed from %sconnected to %sconnected\n",
-			sd->headset_connected ? "" : "not ",
-			connected ? "" : "not ");
+			old_connected ? "" : "not ",
+			sd->headset_connected ? "" : "not ");
 
-		if (connected && !sd->headset_connected && sd->use_async_protocol &&
-		    is_async_interface)
-			schedule_delayed_work(&sd->battery_work, 0);
+		if (sd->headset_connected && !old_connected &&
+		    sd->use_async_protocol && is_async_interface) {
+			schedule_delayed_work(&sd->status_work, 0);
+			if (sd->info->request_settings)
+				schedule_delayed_work(
+					&sd->settings_work,
+					msecs_to_jiffies(10));
+		}
 
-		sd->headset_connected = connected;
-
-		steelseries_headset_set_wireless_status(sd->hdev, connected);
+		steelseries_headset_set_wireless_status(sd->hdev,
+						       sd->headset_connected);
 		power_supply_changed(sd->battery);
 	}
 
-	if (capacity != sd->battery_capacity) {
+	if (sd->battery_capacity != old_capacity) {
 		hid_dbg(hdev, "Battery capacity changed from %d%% to %d%%\n",
-			sd->battery_capacity, capacity);
-		sd->battery_capacity = capacity;
+			old_capacity, sd->battery_capacity);
 		power_supply_changed(sd->battery);
 	}
 
-	if (charging != sd->battery_charging) {
+	if (sd->battery_charging != old_charging) {
 		hid_dbg(hdev,
 			"Battery charging status changed from %scharging to %scharging\n",
-			sd->battery_charging ? "" : "not ",
-			charging ? "" : "not ");
-		sd->battery_charging = charging;
+			old_charging ? "" : "not ",
+			sd->battery_charging ? "" : "not ");
 		power_supply_changed(sd->battery);
 	}
 
@@ -993,11 +1466,28 @@ static int steelseries_probe(struct hid_device *hdev,
 		if (ret)
 			goto err_stop;
 
+		sd->use_async_protocol = !(info->quirks & SS_QUIRK_STATUS_SYNC_POLL);
+
 		if (info->capabilities & SS_CAP_BATTERY) {
 			ret = steelseries_battery_register(sd);
 			if (ret < 0)
 				hid_warn(hdev, "Failed to register battery: %d\n", ret);
 		}
+
+		if (info->capabilities & ~SS_CAP_BATTERY) {
+			ret = sysfs_create_group(&hdev->dev.kobj,
+						 &steelseries_headset_attr_group);
+			if (ret)
+				hid_warn(hdev, "Failed to create sysfs group: %d\n", ret);
+		}
+
+		INIT_DELAYED_WORK(&sd->status_work, steelseries_status_timer_work_handler);
+		schedule_delayed_work(&sd->status_work, msecs_to_jiffies(100));
+
+		INIT_DELAYED_WORK(&sd->settings_work, steelseries_settings_work_handler);
+		if (info->request_settings)
+			schedule_delayed_work(&sd->settings_work, msecs_to_jiffies(100));
+
 		return 0;
 	}
 
@@ -1059,6 +1549,10 @@ static void steelseries_remove(struct hid_device *hdev)
 	}
 
 	if (interface_num == sd->info->sync_interface) {
+		if (sd->info->capabilities & ~SS_CAP_BATTERY)
+			sysfs_remove_group(&hdev->dev.kobj,
+					   &steelseries_headset_attr_group);
+
 		if (sd->info->async_interface) {
 			struct hid_device *sibling;
 
@@ -1072,7 +1566,8 @@ static void steelseries_remove(struct hid_device *hdev)
 		sd->removed = true;
 		spin_unlock_irqrestore(&sd->lock, flags);
 
-		cancel_delayed_work_sync(&sd->battery_work);
+		cancel_delayed_work_sync(&sd->status_work);
+		cancel_delayed_work_sync(&sd->settings_work);
 	}
 
 	hid_hw_close(hdev);
@@ -1127,7 +1622,7 @@ static const struct hid_device_id steelseries_devices[] = {
 	  .driver_data = (unsigned long)&arctis_nova_5_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X),
-	  .driver_data = (unsigned long)&arctis_nova_5_info },
+	  .driver_data = (unsigned long)&arctis_nova_5x_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7),
 	  .driver_data = (unsigned long)&arctis_nova_7_info },
@@ -1136,7 +1631,7 @@ static const struct hid_device_id steelseries_devices[] = {
 	  .driver_data = (unsigned long)&arctis_nova_7_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_P),
-	  .driver_data = (unsigned long)&arctis_nova_7_info },
+	  .driver_data = (unsigned long)&arctis_nova_7p_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_DIABLO),
 	  .driver_data = (unsigned long)&arctis_nova_7_info },
@@ -1145,19 +1640,19 @@ static const struct hid_device_id steelseries_devices[] = {
 	  .driver_data = (unsigned long)&arctis_nova_7_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_2),
-	  .driver_data = (unsigned long)&arctis_nova_7_async_info },
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_DIABLO_2),
-	  .driver_data = (unsigned long)&arctis_nova_7_async_info },
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_GEN2),
-	  .driver_data = (unsigned long)&arctis_nova_7_async_info },
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2),
-	  .driver_data = (unsigned long)&arctis_nova_7_async_info },
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2_2),
-	  .driver_data = (unsigned long)&arctis_nova_7_async_info },
+	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO),
 	  .driver_data = (unsigned long)&arctis_nova_pro_info },
