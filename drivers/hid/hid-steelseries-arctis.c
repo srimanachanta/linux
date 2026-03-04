@@ -110,6 +110,13 @@ static int steelseries_arctis_7_request_status(struct hid_device *hdev)
 	return steelseries_send_feature_report(hdev, battery_data, sizeof(battery_data));
 }
 
+static int steelseries_arctis_nova_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x00, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
 static int steelseries_arctis_9_request_status(struct hid_device *hdev)
 {
 	const u8 data[] = { 0x00, 0x20 };
@@ -167,6 +174,19 @@ static void steelseries_arctis_7_parse_status(struct steelseries_device *sd,
 	}
 }
 
+static void steelseries_arctis_7_plus_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (size < 4)
+		return;
+
+	if (data[0] == 0xb0) {
+		sd->headset_connected = !(data[1] == 0x01);
+		sd->battery_capacity = steelseries_map_capacity(data[2], 0x00, 0x04);
+		sd->battery_charging = (data[3] == 0x01);
+	}
+}
+
 static void steelseries_arctis_9_parse_status(struct steelseries_device *sd,
 					      u8 *data, int size)
 {
@@ -196,6 +216,13 @@ static const struct steelseries_device_info arctis_7_info = {
 	.capabilities = SS_CAP_BATTERY,
 	.request_status = steelseries_arctis_7_request_status,
 	.parse_status = steelseries_arctis_7_parse_status,
+};
+
+static const struct steelseries_device_info arctis_7_plus_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_7_plus_parse_status,
 };
 
 static const struct steelseries_device_info arctis_9_info = {
@@ -517,6 +544,18 @@ static const struct hid_device_id steelseries_arctis_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_GEN2),
 	  .driver_data = (unsigned long)&arctis_7_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS),
+	  .driver_data = (unsigned long)&arctis_7_plus_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_P),
+	  .driver_data = (unsigned long)&arctis_7_plus_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_X),
+	  .driver_data = (unsigned long)&arctis_7_plus_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_7_PLUS_DESTINY),
+	  .driver_data = (unsigned long)&arctis_7_plus_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_9),
 	  .driver_data = (unsigned long)&arctis_9_info },
