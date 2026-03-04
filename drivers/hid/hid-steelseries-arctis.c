@@ -463,6 +463,9 @@ static int steelseries_arctis_raw_event(struct hid_device *hdev,
 
 static const struct hid_device_id steelseries_arctis_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_1),
+	  .driver_data = (unsigned long)&arctis_1_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_1_X),
 	  .driver_data = (unsigned long)&arctis_1_info },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
