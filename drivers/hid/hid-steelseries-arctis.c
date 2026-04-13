@@ -135,6 +135,13 @@ static int steelseries_arctis_nova_3p_request_status(struct hid_device *hdev)
 	return steelseries_send_output_report(hdev, data, sizeof(data));
 }
 
+static int steelseries_arctis_nova_pro_request_status(struct hid_device *hdev)
+{
+	const u8 data[] = { 0x06, 0xb0 };
+
+	return steelseries_send_output_report(hdev, data, sizeof(data));
+}
+
 /*
  * Headset battery helpers
  */
@@ -273,6 +280,19 @@ static void steelseries_arctis_nova_7_gen2_parse_status(struct steelseries_devic
 	}
 }
 
+static void steelseries_arctis_nova_pro_parse_status(struct steelseries_device *sd,
+						     u8 *data, int size)
+{
+	if (size < 16)
+		return;
+
+	if (data[0] == 0x06 && data[1] == 0xb0) {
+		sd->headset_connected = (data[15] == 0x08 || data[15] == 0x02);
+		sd->battery_capacity = steelseries_map_capacity(data[6], 0x00, 0x08);
+		sd->battery_charging = (data[15] == 0x02);
+	}
+}
+
 /*
  * Device info definitions
  */
@@ -339,6 +359,14 @@ static const struct steelseries_device_info arctis_nova_7_gen2_info = {
 	.capabilities = SS_CAP_BATTERY,
 	.request_status = steelseries_arctis_nova_request_status,
 	.parse_status = steelseries_arctis_nova_7_gen2_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_pro_info = {
+	.sync_interface = 4,
+	.capabilities = SS_CAP_BATTERY,
+	.quirks = SS_QUIRK_STATUS_SYNC_POLL,
+	.request_status = steelseries_arctis_nova_pro_request_status,
+	.parse_status = steelseries_arctis_nova_pro_parse_status,
 };
 
 /*
@@ -765,6 +793,12 @@ static const struct hid_device_id steelseries_arctis_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_7_X_GEN2_2),
 	  .driver_data = (unsigned long)&arctis_nova_7_gen2_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO),
+	  .driver_data = (unsigned long)&arctis_nova_pro_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_PRO_X),
+	  .driver_data = (unsigned long)&arctis_nova_pro_info },
 	{}
 };
 MODULE_DEVICE_TABLE(hid, steelseries_arctis_devices);
