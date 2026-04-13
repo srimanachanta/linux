@@ -219,6 +219,19 @@ static void steelseries_arctis_nova_3p_parse_status(struct steelseries_device *s
 	}
 }
 
+static void steelseries_arctis_nova_5_parse_status(struct steelseries_device *sd,
+						   u8 *data, int size)
+{
+	if (size < 5)
+		return;
+
+	if (data[0] == 0xb0) {
+		sd->headset_connected = !(data[1] == 0x02);
+		sd->battery_capacity = data[3];
+		sd->battery_charging = (data[4] == 0x01);
+	}
+}
+
 /*
  * Device info definitions
  */
@@ -256,6 +269,13 @@ static const struct steelseries_device_info arctis_nova_3p_info = {
 	.capabilities = SS_CAP_BATTERY,
 	.request_status = steelseries_arctis_nova_3p_request_status,
 	.parse_status = steelseries_arctis_nova_3p_parse_status,
+};
+
+static const struct steelseries_device_info arctis_nova_5_info = {
+	.sync_interface = 3,
+	.capabilities = SS_CAP_BATTERY,
+	.request_status = steelseries_arctis_nova_request_status,
+	.parse_status = steelseries_arctis_nova_5_parse_status,
 };
 
 /*
@@ -591,6 +611,12 @@ static const struct hid_device_id steelseries_arctis_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
 			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_3_X),
 	  .driver_data = (unsigned long)&arctis_nova_3p_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5),
+	  .driver_data = (unsigned long)&arctis_nova_5_info },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_STEELSERIES,
+			 USB_DEVICE_ID_STEELSERIES_ARCTIS_NOVA_5_X),
+	  .driver_data = (unsigned long)&arctis_nova_5_info },
 	{}
 };
 MODULE_DEVICE_TABLE(hid, steelseries_arctis_devices);
